@@ -171,9 +171,13 @@ class GridAuthoringBaker : Baker<GridAuthoring>
         AddComponent(entity, new GridComponent
         {
             GlobalCenter = authoring.gridBounds.center + authoring.transform.position,
+            GlobalStart = authoring.gridBounds.min + authoring.transform.position,
+            
             Width = width,
             Height = height,
-            Depth = depth
+            Depth = depth,
+            
+            CellSize = authoring.cellSize
         });
         var gridCells = AddBuffer<GridCell>(entity);
 
@@ -189,8 +193,9 @@ class GridAuthoringBaker : Baker<GridAuthoring>
                 {
                     gridCells.Add(new GridCell
                     {
-                        Displacement = float3.zero,
-                        Weight = 0f,
+                        Momentum = float3.zero,
+                        Velocity = float3.zero,
+                        Mass = 0f,
                         Volume = 0f
                     });
                 }
@@ -204,13 +209,15 @@ class GridAuthoringBaker : Baker<GridAuthoring>
 public struct GridComponent : IComponentData
 {
     public float3 GlobalCenter;
+    public float3 GlobalStart;
     public float Width, Height, Depth;
-    public int CellCount;
+    public float CellSize;
 }
 
-struct GridCell : IBufferElementData
+public struct GridCell : IBufferElementData
 {
-    public float3 Displacement;
-    public float Weight;
+    public float3 Momentum;
+    public float3 Velocity;
+    public float Mass;
     public float Volume;
 }

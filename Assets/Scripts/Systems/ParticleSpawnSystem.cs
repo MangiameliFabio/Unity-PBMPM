@@ -35,6 +35,10 @@ partial struct ParticleSpawnSystem : ISystem
 
                         var particleEntity = state.EntityManager.Instantiate(config.ParticlePrefab);
                         state.EntityManager.SetComponentData(particleEntity, LocalTransform.FromPosition(globalPosition));
+
+                        var particleData = state.EntityManager.GetComponentData<ParticleComponent>(particleEntity);
+                        particleData.Position = globalPosition;
+                        state.EntityManager.SetComponentData(particleEntity, particleData);
                     }
                 }
             }

@@ -1,4 +1,4 @@
-using Unity.Entities;
+﻿using Unity.Entities;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -16,6 +16,7 @@ class ParticleBaker : Baker<ParticleAuthoring>
             GridCache = Entity.Null,
             
             Velocity = float3.zero,
+            AffineVelocity = float3x3.zero,
             DeformationDisplacement = float3x3.identity,
             DeformationGradient = float3x3.identity,
             Mass = 1f,
@@ -31,6 +32,7 @@ struct ParticleComponent : IComponentData
     
     public float3 Position;
     public float3 Velocity;
+    public float3x3 AffineVelocity;
     public float3x3 DeformationDisplacement;
     public float3x3 DeformationGradient;
     public float Volume;
