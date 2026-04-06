@@ -193,6 +193,7 @@ class GridAuthoringBaker : Baker<GridAuthoring>
                 {
                     gridCells.Add(new GridCell
                     {
+                        GlobalCenter = (float3)(authoring.gridBounds.min + authoring.transform.position) + new float3(x, y, z) * authoring.cellSize + 0.5f * authoring.cellSize,
                         Momentum = float3.zero,
                         Velocity = float3.zero,
                         Mass = 0f,
@@ -216,6 +217,7 @@ public struct GridComponent : IComponentData
 
 public struct GridCell : IBufferElementData
 {
+    public float3 GlobalCenter;
     public float3 Momentum;
     public float3 Velocity;
     public float Mass;

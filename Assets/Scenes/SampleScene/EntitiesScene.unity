@@ -277,6 +277,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2019155449}
   - component: {fileID: 2019155452}
+  - component: {fileID: 2019155453}
   - component: {fileID: 2019155451}
   - component: {fileID: 2019155450}
   m_Layer: 0
@@ -295,7 +296,7 @@ Transform:
   m_GameObject: {fileID: 2019155448}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -22.9, y: -8.9, z: 30.1}
+  m_LocalPosition: {x: -27.6, y: -8.8, z: 41.8}
   m_LocalScale: {x: 100, y: 5, z: 100}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -379,6 +380,21 @@ BoxCollider:
   serializedVersion: 3
   m_Size: {x: 1, y: 1, z: 1}
   m_Center: {x: 0, y: 0, z: 0}
+--- !u!114 &2019155453
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2019155448}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 99ce9b26216c26e4ca3eb69922f20062, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CollisionObjectAuthoring
+  friction: 0.5
+  surfaceOffset: 0
+  sticky: 0
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
