@@ -6,6 +6,8 @@ using UnityEngine.Rendering;
 
 partial struct ParticleSpawnSystem : ISystem
 {
+    private float current_game_time;
+    private float last_upadet_time;
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<Config>();
@@ -13,6 +15,15 @@ partial struct ParticleSpawnSystem : ISystem
 
     public void OnUpdate(ref SystemState state)
     {
+        // current_game_time += SystemAPI.Time.DeltaTime;
+        //
+        // if (current_game_time < last_upadet_time + 1f)
+        // {
+        //     return;
+        // }
+        //
+        // last_upadet_time = current_game_time;
+        
         state.Enabled = false;
         
         var config = SystemAPI.GetSingleton<Config>();
@@ -38,6 +49,7 @@ partial struct ParticleSpawnSystem : ISystem
 
                         var particleData = state.EntityManager.GetComponentData<ParticleComponent>(particleEntity);
                         particleData.Position = globalPosition;
+                        particleData.Volume = shape.ValueRO.LocalStep.x * shape.ValueRO.LocalStep.y * shape.ValueRO.LocalStep.z;
                         state.EntityManager.SetComponentData(particleEntity, particleData);
                     }
                 }

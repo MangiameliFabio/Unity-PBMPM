@@ -60,34 +60,61 @@ struct GridBoxCollider
     }
 }
 
-[UpdateInGroup(typeof(FixedStepSimulationSystemGroup))]
-[UpdateBefore(typeof(PhysicsSystemGroup))]
 partial struct PBMPMSolverSystem : ISystem
 {
     private static readonly float3 Gravity = new float3(0f, -9.81f, 0f);
-    private const float CollisionFriction = 0.5f;
+    private const float CollisionFriction = 0.01f;
     private EntityQuery _gridQuery;
+    private EntityQuery _particleQuery;
     private ComponentLookup<GridComponent> _gridLookup;
     private BufferLookup<GridCell> _gridCellsLookupRW;
     private BufferLookup<GridCell> _gridCellsLookupRO;
     private NativeList<GridBoxCollider> _colliders;
+    private Entity _debugStatsEntity;
+
+    private float _currentTime;
+    private float _solverDeltaTime;
+    private float _lastTime;
+    private float _remainingTime;
+    private int _solverSubsteps;
+    private float _fixedDeltaTime;
 
     public void OnCreate(ref SystemState state)
     {
+        state.RequireForUpdate<Config>();
+        
         _gridQuery = SystemAPI.QueryBuilder().WithAll<GridComponent>().Build();
+        _particleQuery = SystemAPI.QueryBuilder().WithAll<ParticleComponent>().Build();
         _gridLookup = state.GetComponentLookup<GridComponent>(true);
         _gridCellsLookupRW = state.GetBufferLookup<GridCell>(false);
         _gridCellsLookupRO = state.GetBufferLookup<GridCell>(true);
         _colliders = new NativeList<GridBoxCollider>(Allocator.Persistent);
+        _debugStatsEntity = state.EntityManager.CreateEntity(typeof(SimulationDebugStats));
     }
 
     public void OnUpdate(ref SystemState state)
     {
+        var config = SystemAPI.GetSingleton<Config>();
+        _currentTime += SystemAPI.Time.DeltaTime;
+        _solverDeltaTime = _currentTime - _lastTime;
+        _remainingTime += _solverDeltaTime;
+
+        _fixedDeltaTime = 1f / config.UpdateFrequency;
+        _solverSubsteps = (int)(_remainingTime / _fixedDeltaTime);
+        _remainingTime -= _solverSubsteps * _fixedDeltaTime;
+        
         _gridLookup.Update(ref state);
         _gridCellsLookupRW.Update(ref state);
         _gridCellsLookupRO.Update(ref state);
         RebuildColliderCache(ref state);
         ScheduleParticleJobs(ref state);
+        state.EntityManager.SetComponentData(_debugStatsEntity, new SimulationDebugStats
+        {
+            ParticleCount = _particleQuery.CalculateEntityCount(),
+            SolverIterations = _solverSubsteps
+        });
+        
+        _lastTime = _currentTime;
     }
 
     public void OnDestroy(ref SystemState state)
@@ -133,60 +160,83 @@ partial struct PBMPMSolverSystem : ISystem
     [BurstCompile]
     private void ScheduleParticleJobs(ref SystemState state)
     {
+        int liquidIterations = math.max(1, SystemAPI.GetSingleton<Config>().LiquidSolverIterations);
         var gridEntities = _gridQuery.ToEntityArray(Allocator.TempJob);
-        float deltaTime = SystemAPI.Time.DeltaTime;
-        
-        //Clear Grid
-        var clearGridJob = new ClearGridJob();
-        state.Dependency = clearGridJob.ScheduleParallel(state.Dependency);
-        state.Dependency.Complete();
-        
-        //Particle to Grid
-        var particleToGridJob = new ParticleToGridJob
+
+        for (int substepIndex = 0; substepIndex < _solverSubsteps; substepIndex++)
         {
-            GridLookup = _gridLookup,
-            GridCellsLookup = _gridCellsLookupRW,
-            GridEntities = gridEntities
-        };
-        state.Dependency = particleToGridJob.Schedule(state.Dependency);
-        state.Dependency.Complete();
-        
-        //Update all Grid
-        var gridCellsLookup = _gridCellsLookupRW;
-        JobHandle gridUpdateHandle = default;
-        foreach (var gridEntity in gridEntities)
-        {
-            NativeArray<GridCell> gridCells = gridCellsLookup[gridEntity].AsNativeArray();
-            var gridUpdateJob = new GridUpdateJob
+            for (int liquidIteration = 0; liquidIteration < liquidIterations; liquidIteration++)
             {
-                Colliders = _colliders,
-                GridCells = gridCells,
+                //Clear Grid
+                JobHandle clearGridHandle = state.Dependency;
+                foreach (var gridEntity in gridEntities)
+                {
+                    NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
+                    var clearGridJob = new ClearGridJob
+                    {
+                        GridCells = gridCells
+                    };
+                    clearGridHandle = clearGridJob.ScheduleParallel(gridCells.Length, 64, clearGridHandle);
+                }
+                state.Dependency = clearGridHandle;
+                state.Dependency.Complete();
+                
+                //Solve Constraints
+                var constraintSolverJob = new SolveConstraintsJob();
+                state.Dependency = constraintSolverJob.ScheduleParallel(state.Dependency);
+                state.Dependency.Complete();
+            
+                //Particle to Grid
+                var particleToGridJob = new ParticleToGridJob
+                {
+                    GridLookup = _gridLookup,
+                    GridCellsLookup = _gridCellsLookupRW,
+                    GridEntities = gridEntities,
+                    DeltaTime = _fixedDeltaTime
+                };
+                state.Dependency = particleToGridJob.Schedule(state.Dependency);
+                state.Dependency.Complete();
+            
+                //Update Grid
+                JobHandle gridUpdateHandle = default;
+                foreach (var gridEntity in gridEntities)
+                {
+                    NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
+                    var gridUpdateJob = new GridUpdateJob
+                    {
+                        Colliders = _colliders.AsArray(),
+                        GridCells = gridCells,
+                        FrictionCoefficient = CollisionFriction,
+                        DeltaTime = _fixedDeltaTime
+                    };
+                    gridUpdateHandle = gridUpdateJob.ScheduleParallel(gridCells.Length, 64, gridUpdateHandle);
+                }
+                state.Dependency = gridUpdateHandle;
+                state.Dependency.Complete();
+            
+                //Grid to Particle
+                var gridToParticleJob = new GridToParticleJob
+                {
+                    GridLookup = _gridLookup,
+                    GridCellsLookup = _gridCellsLookupRO,
+                    GridEntities = gridEntities,
+                    DeltaTime = _fixedDeltaTime
+                };
+                state.Dependency = gridToParticleJob.ScheduleParallel(state.Dependency);
+                state.Dependency.Complete();
+            }
+
+            //Integrate once per fixed substep, after all PB liquid iterations.
+            var integrateParticles = new IntegrateParticlesJob
+            {
+                DeltaTime = _fixedDeltaTime,
                 FrictionCoefficient = CollisionFriction,
-                DeltaTime = deltaTime
+                Colliders = _colliders.AsArray()
             };
-            gridUpdateHandle = gridUpdateJob.ScheduleParallel(gridCells.Length, 64, gridUpdateHandle);
+            state.Dependency = integrateParticles.ScheduleParallel(state.Dependency);
+            state.Dependency.Complete();
         }
-        state.Dependency = gridUpdateHandle;
-        state.Dependency.Complete();
-        
-        //Grid to Particle
-        var gridToParticleJob = new GridToParticleJob
-        {
-            GridLookup = _gridLookup,
-            GridCellsLookup = _gridCellsLookupRO,
-            GridEntities = gridEntities,
-            DeltaTime = deltaTime
-        };
-        state.Dependency = gridToParticleJob.ScheduleParallel(state.Dependency);
-        state.Dependency.Complete();
-        
-        //Integrate Particles
-        var integrateParticles = new IntegrateParticlesJob
-        {
-            DeltaTime = deltaTime
-        };
-        state.Dependency = integrateParticles.ScheduleParallel(state.Dependency);
-        state.Dependency.Complete();
+
         state.Dependency = gridEntities.Dispose(state.Dependency);
     }
     
@@ -195,23 +245,31 @@ partial struct PBMPMSolverSystem : ISystem
     {
         private void Execute(ref ParticleComponent particle)
         {
+            float3x3 D = particle.DeformationDisplacement;
+            float traceD = D.c0.x + D.c1.y + D.c2.z;
+            
+            float3x3 dHydro = float3x3.identity * (particle.LiquidDensity - 1f - traceD);
+            float3x3 dVisc = -(D - traceD * float3x3.identity);
+            
+            D += particle.hydroFactor * dHydro;
+            D += particle.viscFactor * dVisc;
+            
+            particle.DeformationDisplacement = D;
         }
     }
     
     [BurstCompile]
-    private partial struct ClearGridJob : IJobEntity
+    private partial struct ClearGridJob : IJobFor
     {
-        private void Execute(DynamicBuffer<GridCell> gridCells)
+        public NativeArray<GridCell> GridCells;
+        public void Execute(int index)
         {
-            for (int i = 0; i < gridCells.Length; i++)
-            {
-                GridCell cell = gridCells[i];
-                cell.Momentum = float3.zero;
-                cell.Velocity = float3.zero;
-                cell.Mass = 0f;
-                cell.Volume = 0f;
-                gridCells.ElementAt(i) = cell;
-            }
+            GridCell cell = GridCells[index];
+            cell.Momentum = float3.zero;
+            cell.Velocity = float3.zero;
+            cell.Mass = 0f;
+            cell.Volume = 0f;
+            GridCells[index] = cell;
         }
     }
 
@@ -221,6 +279,7 @@ partial struct PBMPMSolverSystem : ISystem
         [ReadOnly] public ComponentLookup<GridComponent> GridLookup;
         public BufferLookup<GridCell> GridCellsLookup;
         [ReadOnly] public NativeArray<Entity> GridEntities;
+        [ReadOnly] public float DeltaTime;
 
         private void Execute(ref ParticleComponent particle)
         {
@@ -268,8 +327,9 @@ partial struct PBMPMSolverSystem : ISystem
                         float3 relativePosition = cellCenter - particle.Position;
 
                         float massContribution = weight * particle.Mass;
+                        float3x3 C = particle.DeformationDisplacement / DeltaTime;
                         float3 momentumContribution = weight * particle.Mass *
-                                                      (particle.Velocity + math.mul(particle.AffineVelocity, relativePosition));
+                                                      (particle.Velocity + math.mul(C, relativePosition));
 
                         GridCell cell = gridCells[cellIndex];
                         cell.Mass += massContribution;
@@ -334,7 +394,6 @@ partial struct PBMPMSolverSystem : ISystem
 
             cell.Velocity = cell.Momentum / cell.Mass;
             cell.Velocity += Gravity * DeltaTime;
-            GridCells[index] = cell;
 
             foreach (var collider in Colliders)
             {
@@ -355,7 +414,7 @@ partial struct PBMPMSolverSystem : ISystem
                     float vTLength = math.length(vT);
 
                     float3 collidedRelativeVelocity;
-                    if (vTLength <= -FrictionCoefficient * vN)
+                    if (vTLength <= 1e-6f || vTLength <= -FrictionCoefficient * vN)
                     {
                         collidedRelativeVelocity = float3.zero;
                     }
@@ -399,8 +458,10 @@ partial struct PBMPMSolverSystem : ISystem
             }
 
             float3 velocity = float3.zero;
-            float3x3 affineVelocity = float3x3.zero;
+            float3x3 C = float3x3.zero;
+            float liquidDensity = 0f;
             float inverseCellSizeSquared = 1f / (grid.CellSize * grid.CellSize);
+            float inverseCellVolume = 1f / (grid.CellSize * grid.CellSize * grid.CellSize);
 
             for (int xOffset = 0; xOffset <= 1; xOffset++)
             {
@@ -431,13 +492,15 @@ partial struct PBMPMSolverSystem : ISystem
                         float3 relativePosition = cellCenter - particle.Position;
 
                         velocity += weight * cell.Velocity;
-                        affineVelocity += weight * OuterProduct(cell.Velocity, relativePosition) * inverseCellSizeSquared;
+                        C += weight * OuterProduct(cell.Velocity, relativePosition) * inverseCellSizeSquared;
+                        liquidDensity += weight * cell.Volume * inverseCellVolume;
                     }
                 }
             }
 
             particle.Velocity = velocity;
-            particle.AffineVelocity = affineVelocity;
+            particle.DeformationDisplacement = C * DeltaTime;
+            particle.LiquidDensity = math.max(liquidDensity, 1e-4f);;
         }
 
         private bool TryResolveGrid(ref ParticleComponent particle, out GridComponent grid)
@@ -483,11 +546,38 @@ partial struct PBMPMSolverSystem : ISystem
     [BurstCompile]
     private partial struct IntegrateParticlesJob : IJobEntity
     {
-        [ReadOnly] public float DeltaTime;
-
+        public float DeltaTime;
+        [ReadOnly] public float FrictionCoefficient;
+        [ReadOnly] public NativeArray<GridBoxCollider> Colliders;
         private void Execute(ref ParticleComponent particle, ref LocalTransform transform)
         {
             particle.Position += particle.Velocity * DeltaTime;
+            particle.DeformationGradient = math.mul(
+                particle.DeformationGradient,
+                float3x3.identity + particle.DeformationDisplacement);
+
+            foreach (var collider in Colliders)
+            {
+                float phi = collider.GetSignedDistance(particle.Position);
+                if (phi <= 0f)
+                {
+                    float3 normal = collider.GetNormal(particle.Position);
+                    float3 colliderVelocity = collider.GetVelocity(particle.Position);
+
+                    particle.Position -= phi * normal;
+                    particle.Position += 1e-4f * normal;
+
+                    float3 relativeVelocity = particle.Velocity - colliderVelocity;
+                    float normalVelocity = math.dot(relativeVelocity, normal);
+
+                    if (normalVelocity < 0f)
+                    {
+                        relativeVelocity -= normalVelocity * normal;
+                        particle.Velocity = relativeVelocity + colliderVelocity;
+                    }
+                }
+            }
+
             transform.Position = particle.Position;
         }
     }

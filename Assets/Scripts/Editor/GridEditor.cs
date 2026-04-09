@@ -11,12 +11,22 @@ public class GridAuthoringEditor : Editor
     private SerializedProperty boundsProperty;
     private SerializedProperty centerProperty;
     private SerializedProperty extentsProperty;
+    private SerializedProperty cellSizeProperty;
+    private SerializedProperty showDebugGridProperty;
+    private SerializedProperty showOnlyOuterFacesProperty;
+    private SerializedProperty boundsColorProperty;
+    private SerializedProperty gridColorProperty;
 
     private void OnEnable()
     {
         boundsProperty = serializedObject.FindProperty("gridBounds");
         centerProperty = boundsProperty?.FindPropertyRelative("m_Center");
         extentsProperty = boundsProperty?.FindPropertyRelative("m_Extent");
+        cellSizeProperty = serializedObject.FindProperty("cellSize");
+        showDebugGridProperty = serializedObject.FindProperty("showDebugGrid");
+        showOnlyOuterFacesProperty = serializedObject.FindProperty("showOnlyOuterFaces");
+        boundsColorProperty = serializedObject.FindProperty("boundsColor");
+        gridColorProperty = serializedObject.FindProperty("gridColor");
     }
 
     public override void OnInspectorGUI()
@@ -24,7 +34,7 @@ public class GridAuthoringEditor : Editor
         serializedObject.Update();
 
         EditorGUI.BeginChangeCheck();
-        DrawDefaultInspector();
+        DrawGridInspector();
         if (EditorGUI.EndChangeCheck())
         {
             serializedObject.ApplyModifiedProperties();
@@ -37,6 +47,25 @@ public class GridAuthoringEditor : Editor
         }
 
         EditorGUILayout.HelpBox("Select the Grid object in the Scene view to edit its bounds handle.", MessageType.None);
+    }
+
+    private void DrawGridInspector()
+    {
+        EditorGUILayout.PropertyField(boundsProperty);
+
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            EditorGUILayout.PrefixLabel(cellSizeProperty.displayName);
+            float editedCellSize = EditorGUILayout.DelayedFloatField(cellSizeProperty.floatValue);
+            cellSizeProperty.floatValue = Mathf.Max(0.01f, editedCellSize);
+        }
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Debug", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(showDebugGridProperty);
+        EditorGUILayout.PropertyField(showOnlyOuterFacesProperty);
+        EditorGUILayout.PropertyField(boundsColorProperty);
+        EditorGUILayout.PropertyField(gridColorProperty);
     }
 
     private void OnSceneGUI()

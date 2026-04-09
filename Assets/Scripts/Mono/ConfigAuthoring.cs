@@ -5,6 +5,8 @@ using UnityEngine.Serialization;
 class ConfigAuthoring : MonoBehaviour
 {
     public GameObject particlePrefab;
+    public float updateFrequency = 30f;
+    public int liquidSolverIterations = 4;
 }
 
 class ConfigAuthoringBaker : Baker<ConfigAuthoring>
@@ -14,7 +16,9 @@ class ConfigAuthoringBaker : Baker<ConfigAuthoring>
         var entity = GetEntity(authoring, TransformUsageFlags.None);
         AddComponent(entity, new Config
         {
-            ParticlePrefab = GetEntity(authoring.particlePrefab, TransformUsageFlags.Dynamic)
+            ParticlePrefab = GetEntity(authoring.particlePrefab, TransformUsageFlags.Dynamic),
+            UpdateFrequency = authoring.updateFrequency,
+            LiquidSolverIterations = Mathf.Max(1, authoring.liquidSolverIterations)
         });
     }
 }
@@ -22,4 +26,7 @@ class ConfigAuthoringBaker : Baker<ConfigAuthoring>
 public struct Config : IComponentData
 {
     public Entity ParticlePrefab;
+    
+    public float UpdateFrequency;
+    public int LiquidSolverIterations;
 }
