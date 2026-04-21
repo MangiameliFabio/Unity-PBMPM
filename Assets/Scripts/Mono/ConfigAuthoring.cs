@@ -1,12 +1,12 @@
 using Unity.Entities;
 using UnityEngine;
-using UnityEngine.Serialization;
-
 class ConfigAuthoring : MonoBehaviour
 {
     public GameObject particlePrefab;
     public float updateFrequency = 30f;
-    public int liquidSolverIterations = 4;
+    public int iterationCount = 4;
+    public GridInterpolationMode interpolationMode = GridInterpolationMode.QuadraticBSplineNodes;
+    public bool useGridVolumePreservation = true;
 }
 
 class ConfigAuthoringBaker : Baker<ConfigAuthoring>
@@ -18,7 +18,9 @@ class ConfigAuthoringBaker : Baker<ConfigAuthoring>
         {
             ParticlePrefab = GetEntity(authoring.particlePrefab, TransformUsageFlags.Dynamic),
             UpdateFrequency = authoring.updateFrequency,
-            LiquidSolverIterations = Mathf.Max(1, authoring.liquidSolverIterations)
+            IterationCount = Mathf.Max(1, authoring.iterationCount),
+            InterpolationMode = authoring.interpolationMode,
+            UseGridVolumePreservation = authoring.useGridVolumePreservation
         });
     }
 }
@@ -28,5 +30,7 @@ public struct Config : IComponentData
     public Entity ParticlePrefab;
     
     public float UpdateFrequency;
-    public int LiquidSolverIterations;
+    public int IterationCount;
+    public GridInterpolationMode InterpolationMode;
+    public bool UseGridVolumePreservation;
 }

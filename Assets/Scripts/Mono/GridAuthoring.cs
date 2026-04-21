@@ -185,18 +185,21 @@ class GridAuthoringBaker : Baker<GridAuthoring>
         var cellCountX = Mathf.Max(1, Mathf.RoundToInt(width / authoring.cellSize));
         var cellCountY = Mathf.Max(1, Mathf.RoundToInt(height / authoring.cellSize));
         var cellCountZ = Mathf.Max(1, Mathf.RoundToInt(depth / authoring.cellSize));
+        var nodeCountX = cellCountX + 1;
+        var nodeCountY = cellCountY + 1;
+        var nodeCountZ = cellCountZ + 1;
 
-        for (int x = 0; x < cellCountX; x++)
+        for (int x = 0; x < nodeCountX; x++)
         {
-            for (int y = 0; y < cellCountY; y++)
+            for (int y = 0; y < nodeCountY; y++)
             {
-                for (int z = 0; z < cellCountZ; z++)
+                for (int z = 0; z < nodeCountZ; z++)
                 {
                     gridCells.Add(new GridCell
                     {
-                        GlobalCenter = (float3)(authoring.gridBounds.min + authoring.transform.position) + new float3(x, y, z) * authoring.cellSize + 0.5f * authoring.cellSize,
-                        Momentum = float3.zero,
-                        Velocity = float3.zero,
+                        Coordinates = new int3(x, y, z),
+                        WeightedDisplacement = float3.zero,
+                        Displacement = float3.zero,
                         Mass = 0f,
                         Volume = 0f
                     });
@@ -218,9 +221,9 @@ public struct GridComponent : IComponentData
 
 public struct GridCell : IBufferElementData
 {
-    public float3 GlobalCenter;
-    public float3 Momentum;
-    public float3 Velocity;
+    public int3 Coordinates;
+    public float3 WeightedDisplacement;
+    public float3 Displacement;
     public float Mass;
     public float Volume;
 }
