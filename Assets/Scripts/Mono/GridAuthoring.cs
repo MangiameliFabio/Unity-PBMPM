@@ -224,6 +224,9 @@ public struct GridCell : IBufferElementData
     public int3 Coordinates;
     public float3 WeightedDisplacement;
     public float3 Displacement;
+    
     public float Mass;
     public float Volume;
+    
+    public int LastTouchedIteration;
 }

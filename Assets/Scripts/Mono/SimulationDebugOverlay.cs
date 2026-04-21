@@ -52,6 +52,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         int particleCount = 0;
         GridInterpolationMode interpolationMode = GridInterpolationMode.QuadraticBSplineNodes;
         bool useGridVolumePreservation = true;
+        bool useVisualSmoothing = true;
         if (TryGetSimulationStats(out SimulationDebugStats stats))
         {
             particleCount = stats.ParticleCount;
@@ -60,6 +61,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         {
             interpolationMode = config.InterpolationMode;
             useGridVolumePreservation = config.UseGridVolumePreservation;
+            useVisualSmoothing = config.UseVisualSmoothing;
         }
 
         float averageFps = GetAverage(_fpsSamples, _filledSamples);
@@ -85,6 +87,11 @@ public class SimulationDebugOverlay : MonoBehaviour
         if (toggledGridVolumePreservation != useGridVolumePreservation)
         {
             SetGridVolumePreservation(toggledGridVolumePreservation);
+        }
+        bool toggledVisualSmoothing = GUILayout.Toggle(useVisualSmoothing, " Particle Visual Smoothing");
+        if (toggledVisualSmoothing != useVisualSmoothing)
+        {
+            SetVisualSmoothing(toggledVisualSmoothing);
         }
         GUILayout.EndArea();
     }
@@ -141,6 +148,36 @@ public class SimulationDebugOverlay : MonoBehaviour
 
         config = _configQuery.GetSingleton<Config>();
         return true;
+    }
+
+    private void SetVisualSmoothing(bool useVisualSmoothing)
+    {
+        World world = World.DefaultGameObjectInjectionWorld;
+        if (world == null || !world.IsCreated)
+        {
+            return;
+        }
+        
+        EntityManager entityManager = world.EntityManager;
+        if (_cachedWorld != world || _configQuery == default)
+        {
+            _cachedWorld = world;
+            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
+        }
+        
+        if (_configQuery.IsEmptyIgnoreFilter)
+        {
+            return;
+        }
+        
+        Config config = _configQuery.GetSingleton<Config>();
+        if (config.UseVisualSmoothing == useVisualSmoothing)
+        {
+            return;
+        }
+        
+        config.UseVisualSmoothing = useVisualSmoothing;
+        entityManager.SetComponentData(_configQuery.GetSingletonEntity(), config);
     }
 
     private void SetInterpolationMode(GridInterpolationMode interpolationMode)

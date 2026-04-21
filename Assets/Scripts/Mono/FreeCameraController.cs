@@ -1,93 +1,152 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.UIElements;
-using Cursor = UnityEngine.Cursor;
+using UnityEngine.InputSystem.Controls;
 
-[RequireComponent(typeof(Camera))]
-public class FreeCam : MonoBehaviour
+public class FreeCameraController : MonoBehaviour
 {
-    [Header("Movement Settings")]
-    public float moveSpeed = 10f;
-    public float fastSpeedMultiplier = 3f;
-    public float sensitivity = 2f;
-    public float climbSpeed = 5f;
+    [SerializeField] private float moveSpeed = 12f;
+    [SerializeField] private float sprintMultiplier = 3f;
+    [SerializeField] private float lookSensitivity = 2f;
+    [SerializeField] private Key toggleMouseCaptureKey = Key.Escape;
 
-    [Header("Control Options")]
-    public bool lockCursor = true;
-    public KeyCode fastKey = KeyCode.LeftShift;
-    public KeyCode upKey = KeyCode.E;
-    public KeyCode downKey = KeyCode.Q;
+    private float _yaw;
+    private float _pitch;
+    private bool _isMouseCaptured;
+    private bool _ignoreNextMouseDelta;
 
-    private float rotationX;
-    private float rotationY;
-
-    public bool BlockMovement = false;
-    
-    private VisualElement _ui;
-    private Keyboard _keyboard;
-
-    void Start()
+    private void OnEnable()
     {
-        _keyboard = Keyboard.current;
-        
-        if (lockCursor)
-        {
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
-        }
+        Vector3 eulerAngles = transform.eulerAngles;
+        _yaw = eulerAngles.y;
+        _pitch = NormalizeAngle(eulerAngles.x);
+        SetMouseCapture(true);
     }
 
-    void Update()
+    private void OnDisable()
     {
-        if (BlockMovement)
+        SetMouseCapture(false);
+    }
+
+    private void Update()
+    {
+        UpdateMouseCaptureToggle();
+        UpdateRotation();
+        UpdateMovement();
+    }
+
+    private void UpdateMouseCaptureToggle()
+    {
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard == null)
+        {
             return;
-        
-        if (_keyboard != null && _keyboard.f11Key.wasPressedThisFrame)
-        {
-            BlockMovement = !BlockMovement;
         }
 
-        HandleMouseLook();
-        HandleMovement();
-        
-        if (Input.GetKeyDown(KeyCode.Escape))
+        KeyControl toggleKey = keyboard[toggleMouseCaptureKey];
+        if (toggleKey != null && toggleKey.wasPressedThisFrame)
         {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
+            SetMouseCapture(!_isMouseCaptured);
         }
     }
 
-    void HandleMouseLook()
+    private void UpdateRotation()
     {
-        float mouseX = Input.GetAxis("Mouse X") * sensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * sensitivity;
+        if (!_isMouseCaptured)
+        {
+            return;
+        }
 
-        rotationX += mouseX;
-        rotationY -= mouseY;
-        rotationY = Mathf.Clamp(rotationY, -89f, 89f);
+        Mouse mouse = Mouse.current;
+        if (mouse == null)
+        {
+            return;
+        }
 
-        transform.rotation = Quaternion.Euler(rotationY, rotationX, 0f);
+        Vector2 mouseDelta = mouse.delta.ReadValue();
+        if (_ignoreNextMouseDelta)
+        {
+            _ignoreNextMouseDelta = false;
+            return;
+        }
+
+        float mouseX = mouseDelta.x;
+        float mouseY = mouseDelta.y;
+
+        _yaw += mouseX * lookSensitivity;
+        _pitch -= mouseY * lookSensitivity;
+        _pitch = Mathf.Clamp(_pitch, -89f, 89f);
+
+        transform.rotation = Quaternion.Euler(_pitch, _yaw, 0f);
     }
 
-    void HandleMovement()
+    private void UpdateMovement()
     {
-        float speed = moveSpeed;
-        if (Input.GetKey(fastKey))
-            speed *= fastSpeedMultiplier;
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard == null)
+        {
+            return;
+        }
 
-        Vector3 move = new Vector3(
-            Input.GetAxis("Horizontal"),
-            0,
-            Input.GetAxis("Vertical")
-        );
+        float currentSpeed = moveSpeed;
+        if (keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed)
+        {
+            currentSpeed *= sprintMultiplier;
+        }
 
-        Vector3 moveDir = transform.TransformDirection(move);
+        Vector3 moveDirection = Vector3.zero;
+        if (keyboard.wKey.isPressed)
+        {
+            moveDirection += transform.forward;
+        }
 
-        if (Input.GetKey(upKey))
-            moveDir.y += 1f;
-        if (Input.GetKey(downKey))
-            moveDir.y -= 1f;
+        if (keyboard.sKey.isPressed)
+        {
+            moveDirection -= transform.forward;
+        }
 
-        transform.position += moveDir * (speed * Time.deltaTime);
+        if (keyboard.dKey.isPressed)
+        {
+            moveDirection += transform.right;
+        }
+
+        if (keyboard.aKey.isPressed)
+        {
+            moveDirection -= transform.right;
+        }
+
+        if (keyboard.spaceKey.isPressed)
+        {
+            moveDirection += Vector3.up;
+        }
+
+        if (keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed)
+        {
+            moveDirection -= Vector3.up;
+        }
+
+        if (moveDirection.sqrMagnitude > 1f)
+        {
+            moveDirection.Normalize();
+        }
+
+        transform.position += moveDirection * (currentSpeed * Time.deltaTime);
+    }
+
+    private static float NormalizeAngle(float angle)
+    {
+        if (angle > 180f)
+        {
+            angle -= 360f;
+        }
+
+        return angle;
+    }
+
+    private void SetMouseCapture(bool captureMouse)
+    {
+        _isMouseCaptured = captureMouse;
+        _ignoreNextMouseDelta = captureMouse;
+        Cursor.lockState = captureMouse ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !captureMouse;
     }
 }

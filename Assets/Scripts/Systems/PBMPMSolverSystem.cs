@@ -8,6 +8,14 @@ using Unity.Physics.Extensions;
 
 public struct GridBoxCollider
 {
+    public struct CollisionResult
+    {
+        public bool Collides;
+        public float Penetration;
+        public float3 Normal;
+        public float3 PointOnCollider;
+    }
+
     public float3 Center;
     public quaternion Rotation;
     public float3 HalfExtents;
@@ -56,13 +64,55 @@ public struct GridBoxCollider
     {
         return Velocity;
     }
+
+    public CollisionResult Collide(float3 x)
+    {
+        float3 localPoint = math.rotate(math.inverse(Rotation), x - Center);
+        float3 distanceToFaces = HalfExtents - math.abs(localPoint);
+        float minPenetration = math.cmin(distanceToFaces);
+
+        if (minPenetration <= 0f)
+        {
+            return default;
+        }
+
+        float3 localNormal;
+        float3 localPointOnCollider = localPoint;
+
+        if (distanceToFaces.x <= distanceToFaces.y && distanceToFaces.x <= distanceToFaces.z)
+        {
+            float sign = localPoint.x >= 0f ? 1f : -1f;
+            localNormal = new float3(-sign, 0f, 0f);
+            localPointOnCollider.x = sign * HalfExtents.x;
+        }
+        else if (distanceToFaces.y <= distanceToFaces.z)
+        {
+            float sign = localPoint.y >= 0f ? 1f : -1f;
+            localNormal = new float3(0f, -sign, 0f);
+            localPointOnCollider.y = sign * HalfExtents.y;
+        }
+        else
+        {
+            float sign = localPoint.z >= 0f ? 1f : -1f;
+            localNormal = new float3(0f, 0f, -sign);
+            localPointOnCollider.z = sign * HalfExtents.z;
+        }
+
+        return new CollisionResult
+        {
+            Collides = true,
+            Penetration = minPenetration,
+            Normal = math.rotate(Rotation, localNormal),
+            PointOnCollider = Center + math.rotate(Rotation, localPointOnCollider)
+        };
+    }
 }
 
 partial struct PBMPMSolverSystem : ISystem
 {
     public static readonly float3 Gravity = new float3(0f, -9.81f, 0f);
+    private const int GridTileSize = 4;
 
-    private const float CollisionFriction = 0.01f;
     private EntityQuery _gridQuery;
     private EntityQuery _particleQuery;
     private ComponentLookup<GridComponent> _gridLookup;
@@ -75,8 +125,12 @@ partial struct PBMPMSolverSystem : ISystem
     private float _solverDeltaTime;
     private float _lastTime;
     private float _remainingTime;
-    private int _solverSubsteps;
     private float _fixedDeltaTime;
+    
+    private int _solverSubsteps;
+    private int _gridIterationId;
+    
+    private Config _config;
 
     public void OnCreate(ref SystemState state)
     {
@@ -93,16 +147,16 @@ partial struct PBMPMSolverSystem : ISystem
 
     public void OnUpdate(ref SystemState state)
     {
-        var config = SystemAPI.GetSingleton<Config>();
-        int iterationCount = math.max(1, config.IterationCount);
-        GridInterpolationMode interpolationMode = config.InterpolationMode;
-        bool useGridVolumePreservation = config.UseGridVolumePreservation;
+        _config = SystemAPI.GetSingleton<Config>();
+        int iterationCount = math.max(1, _config.IterationCount);
+        GridInterpolationMode interpolationMode = _config.InterpolationMode;
+        bool useGridVolumePreservation = _config.UseGridVolumePreservation;
 
         _currentTime += SystemAPI.Time.DeltaTime;
         _solverDeltaTime = _currentTime - _lastTime;
         _remainingTime += _solverDeltaTime;
 
-        _fixedDeltaTime = 1f / config.UpdateFrequency;
+        _fixedDeltaTime = 1f / _config.UpdateFrequency;
         _solverSubsteps = (int)(_remainingTime / _fixedDeltaTime);
         _remainingTime -= _solverSubsteps * _fixedDeltaTime;
 
@@ -170,11 +224,14 @@ partial struct PBMPMSolverSystem : ISystem
         {
             for (int iterationIndex = 0; iterationIndex < iterationCount; iterationIndex++)
             {
+                _gridIterationId++;
                 RunSolverIteration(ref state, gridEntities, interpolationMode, useGridVolumePreservation);
             }
 
             ScheduleIntegrateParticles(ref state);
         }
+        
+        ScheduleSmoothing(ref state);
 
         state.Dependency = gridEntities.Dispose(state.Dependency);
     }
@@ -182,7 +239,6 @@ partial struct PBMPMSolverSystem : ISystem
     [BurstCompile]
     private void RunSolverIteration(ref SystemState state, NativeArray<Entity> gridEntities, GridInterpolationMode interpolationMode, bool useGridVolumePreservation)
     {
-        ClearGrid(ref state, gridEntities);
         SolveConstraints(ref state, useGridVolumePreservation);
         ParticleToGrid(ref state, gridEntities, interpolationMode);
         UpdateGrid(ref state, gridEntities, interpolationMode);
@@ -195,7 +251,6 @@ partial struct PBMPMSolverSystem : ISystem
         var integrateParticles = new IntegrateParticlesJob
         {
             DeltaTime = _fixedDeltaTime,
-            FrictionCoefficient = CollisionFriction,
             Colliders = _colliders.AsArray()
         };
 
@@ -204,20 +259,15 @@ partial struct PBMPMSolverSystem : ISystem
     }
 
     [BurstCompile]
-    private void ClearGrid(ref SystemState state, NativeArray<Entity> gridEntities)
+    private void ScheduleSmoothing(ref SystemState state)
     {
-        JobHandle clearGridHandle = state.Dependency;
-        foreach (var gridEntity in gridEntities)
+        var particleSmoothing = new ParticleSmoothingJob()
         {
-            NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
-            var clearGridJob = new ClearGridJob
-            {
-                GridCells = gridCells
-            };
-            clearGridHandle = clearGridJob.ScheduleParallel(gridCells.Length, 64, clearGridHandle);
-        }
+            DeltaTime = SystemAPI.Time.DeltaTime,
+            UseVisualSmoothing = _config.UseVisualSmoothing
+        };
 
-        state.Dependency = clearGridHandle;
+        state.Dependency = particleSmoothing.ScheduleParallel(state.Dependency);
         state.Dependency.Complete();
     }
 
@@ -226,7 +276,9 @@ partial struct PBMPMSolverSystem : ISystem
     {
         var constraintSolverJob = new SolveConstraintsJob
         {
-            UseGridVolumePreservation = useGridVolumePreservation
+            UseGridVolumePreservation = useGridVolumePreservation,
+            LiquidHydroFactor = _config.LiquidHydroFactor,
+            LiquidViscosityFactor = _config.LiquidViscosityFactor
         };
         state.Dependency = constraintSolverJob.ScheduleParallel(state.Dependency);
         state.Dependency.Complete();
@@ -235,17 +287,52 @@ partial struct PBMPMSolverSystem : ISystem
     [BurstCompile]
     private void ParticleToGrid(ref SystemState state, NativeArray<Entity> gridEntities, GridInterpolationMode interpolationMode)
     {
-        var particleToGridJob = new ParticleToGridJob
-        {
-            GridLookup = _gridLookup,
-            GridCellsLookup = _gridCellsLookupRW,
-            GridEntities = gridEntities,
-            DeltaTime = _fixedDeltaTime,
-            InterpolationMode = interpolationMode
-        };
+        int particleCapacity = math.max(1, _particleQuery.CalculateEntityCount() * 8);
 
-        state.Dependency = particleToGridJob.Schedule(state.Dependency);
-        state.Dependency.Complete();
+        foreach (var gridEntity in gridEntities)
+        {
+            GridComponent grid = _gridLookup[gridEntity];
+            var tileParticles = new NativeParallelMultiHashMap<int, GridTileParticleRecord>(particleCapacity, Allocator.TempJob);
+            var activeTileSet = new NativeParallelHashSet<int>(particleCapacity, Allocator.TempJob);
+
+            var particleToGridTileJob = new ParticleToGridTileJob
+            {
+                GridLookup = _gridLookup,
+                GridEntities = gridEntities,
+                TargetGridEntity = gridEntity,
+                TargetGrid = grid,
+                InterpolationMode = interpolationMode,
+                TileSize = GridTileSize,
+                TileParticles = tileParticles.AsParallelWriter(),
+                ActiveTiles = activeTileSet.AsParallelWriter()
+            };
+
+            state.Dependency = particleToGridTileJob.ScheduleParallel(state.Dependency);
+            state.Dependency.Complete();
+
+            NativeArray<int> activeTiles = activeTileSet.ToNativeArray(Allocator.TempJob);
+            if (activeTiles.Length > 0)
+            {
+                NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
+                var accumulateGridTilesJob = new AccumulateGridTilesJob
+                {
+                    ActiveTiles = activeTiles,
+                    TileParticles = tileParticles,
+                    GridCells = gridCells,
+                    Grid = grid,
+                    InterpolationMode = interpolationMode,
+                    CurrentGridIteration = _gridIterationId,
+                    TileSize = GridTileSize
+                };
+
+                state.Dependency = accumulateGridTilesJob.Schedule(activeTiles.Length, 1, state.Dependency);
+                state.Dependency.Complete();
+            }
+
+            activeTiles.Dispose();
+            activeTileSet.Dispose();
+            tileParticles.Dispose();
+        }
     }
 
     [BurstCompile]
@@ -259,10 +346,10 @@ partial struct PBMPMSolverSystem : ISystem
             {
                 Colliders = _colliders.AsArray(),
                 GridCells = gridCells,
-                FrictionCoefficient = CollisionFriction,
                 DeltaTime = _fixedDeltaTime,
                 Grid = _gridLookup[gridEntity],
-                InterpolationMode = interpolationMode
+                InterpolationMode = interpolationMode,
+                CurrentGridIteration = _gridIterationId
             };
             gridUpdateHandle = gridUpdateJob.ScheduleParallel(gridCells.Length, 64, gridUpdateHandle);
         }
@@ -281,7 +368,8 @@ partial struct PBMPMSolverSystem : ISystem
             GridEntities = gridEntities,
             DeltaTime = _fixedDeltaTime,
             InterpolationMode = interpolationMode,
-            UseGridVolumePreservation = useGridVolumePreservation
+            UseGridVolumePreservation = useGridVolumePreservation,
+            CurrentGridIteration = _gridIterationId
         };
 
         state.Dependency = gridToParticleJob.ScheduleParallel(state.Dependency);

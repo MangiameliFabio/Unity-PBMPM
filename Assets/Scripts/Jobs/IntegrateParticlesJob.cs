@@ -8,7 +8,6 @@ using Unity.Transforms;
 partial struct IntegrateParticlesJob : IJobEntity
 {
     public float DeltaTime;
-    [ReadOnly] public float FrictionCoefficient;
     [ReadOnly] public NativeArray<GridBoxCollider> Colliders;
 
     private void Execute(ref ParticleComponent particle, ref LocalTransform transform)
@@ -22,15 +21,11 @@ partial struct IntegrateParticlesJob : IJobEntity
 
         foreach (var collider in Colliders)
         {
-            float phi = collider.GetSignedDistance(particle.Position);
-            if (phi <= 0f)
+            GridBoxCollider.CollisionResult collision = collider.Collide(particle.Position);
+            if (collision.Collides)
             {
-                float3 normal = collider.GetNormal(particle.Position);
-
-                particle.Position -= phi * normal;
-                particle.Position += 1e-4f * normal;
-
-                particle.Displacement = particle.Position - transform.Position;
+                particle.Displacement -= collision.Penetration * collision.Normal;
+                particle.Position -= collision.Penetration * collision.Normal;
             }
         }
 

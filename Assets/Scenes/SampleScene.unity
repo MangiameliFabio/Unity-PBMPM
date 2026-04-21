@@ -272,6 +272,7 @@ MonoBehaviour:
   moveSpeed: 12
   sprintMultiplier: 3
   lookSensitivity: 1
+  toggleMouseCaptureKey: 60
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0

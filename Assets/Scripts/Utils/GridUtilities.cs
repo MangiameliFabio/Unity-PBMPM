@@ -230,4 +230,50 @@ public static class GridUtilities
             left * right.y,
             left * right.z);
     }
+
+    public static int3 GetTileCounts(int3 nodeCounts, int tileSize)
+    {
+        return new int3(
+            (nodeCounts.x + tileSize - 1) / tileSize,
+            (nodeCounts.y + tileSize - 1) / tileSize,
+            (nodeCounts.z + tileSize - 1) / tileSize);
+    }
+
+    public static int GetTileIndex(int3 tileCounts, int3 nodeCoordinates, int tileSize)
+    {
+        return (nodeCoordinates.x / tileSize * tileCounts.y * tileCounts.z) + (nodeCoordinates.y / tileSize * tileCounts.z) + nodeCoordinates.z / tileSize;
+    }
+
+    public static int3 GetTileCoordinates(int3 tileCounts, int tileIndex)
+    {
+        int tilesPerXSlice = tileCounts.y * tileCounts.z;
+
+        int tileX = tileIndex / tilesPerXSlice;
+        int remainder = tileIndex % tilesPerXSlice;
+
+        int tileY = remainder / tileCounts.z;
+        int tileZ = remainder % tileCounts.z;
+
+        return new int3(tileX, tileY, tileZ);
+    }
+
+    public static bool IsInsideTile(int3 tileMin, int3 tileMax, int3 nodeCoordinates)
+    {
+        return nodeCoordinates.x >= tileMin.x && nodeCoordinates.x < tileMax.x &&
+               nodeCoordinates.y >= tileMin.y && nodeCoordinates.y < tileMax.y &&
+               nodeCoordinates.z >= tileMin.z && nodeCoordinates.z < tileMax.z;
+    }
+
+    public static void AddUniqueTile(ref FixedList128Bytes<int> tiles, int tileIndex)
+    {
+        for (int i = 0; i < tiles.Length; i++)
+        {
+            if (tiles[i] == tileIndex)
+            {
+                return;
+            }
+        }
+
+        tiles.Add(tileIndex);
+    }
 }

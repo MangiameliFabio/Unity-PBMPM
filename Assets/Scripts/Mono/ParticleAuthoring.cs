@@ -22,9 +22,7 @@ class ParticleBaker : Baker<ParticleAuthoring>
             Mass = 1f,
             LiquidDensity = 1f,
             GridMeasuredLiquidDensity = 1f,
-            Volume = 1f,
-            hydroFactor = 0.15f,
-            viscFactor = 0.02f
+            Volume = 1f
         });
     }
 }
@@ -42,6 +40,4 @@ struct ParticleComponent : IComponentData
     public float Mass;
     public float LiquidDensity;
     public float GridMeasuredLiquidDensity;
-    public float hydroFactor;
-    public float viscFactor;
 }

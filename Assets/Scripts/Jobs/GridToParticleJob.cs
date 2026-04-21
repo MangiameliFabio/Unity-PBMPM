@@ -12,6 +12,7 @@ partial struct GridToParticleJob : IJobEntity
     [ReadOnly] public float DeltaTime;
     [ReadOnly] public GridInterpolationMode InterpolationMode;
     [ReadOnly] public bool UseGridVolumePreservation;
+    [ReadOnly] public int CurrentGridIteration;
 
     private void Execute(ref ParticleComponent particle)
     {
@@ -62,6 +63,11 @@ partial struct GridToParticleJob : IJobEntity
 
                         int cellIndex = GridUtilities.GetGridIndex(nodeCounts, supportCoordinates.x, supportCoordinates.y, supportCoordinates.z);
                         GridCell cell = gridCells[cellIndex];
+                        if (cell.LastTouchedIteration != CurrentGridIteration)
+                        {
+                            continue;
+                        }
+
                         float3 supportPosition = GridUtilities.GetGridPosition(grid, supportCoordinates, InterpolationMode);
                         float3 relativePosition = supportPosition - particle.Position;
 
@@ -104,6 +110,11 @@ partial struct GridToParticleJob : IJobEntity
 
                         int cellIndex = GridUtilities.GetGridIndex(nodeCounts, supportCoordinates.x, supportCoordinates.y, supportCoordinates.z);
                         GridCell cell = gridCells[cellIndex];
+                        if (cell.LastTouchedIteration != CurrentGridIteration)
+                        {
+                            continue;
+                        }
+
                         float3 supportPosition = GridUtilities.GetGridPosition(grid, supportCoordinates, InterpolationMode);
                         float3 relativePosition = supportPosition - particle.Position;
 

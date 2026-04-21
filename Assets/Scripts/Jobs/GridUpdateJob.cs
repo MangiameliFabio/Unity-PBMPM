@@ -6,22 +6,19 @@ using Unity.Mathematics;
 [BurstCompile]
 struct GridUpdateJob : IJobFor
 {
-    [ReadOnly] public float FrictionCoefficient;
     public NativeArray<GridCell> GridCells;
     [ReadOnly] public float DeltaTime;
     [ReadOnly] public NativeArray<GridBoxCollider> Colliders;
     [ReadOnly] public GridComponent Grid;
     [ReadOnly] public GridInterpolationMode InterpolationMode;
+    [ReadOnly] public int CurrentGridIteration;
 
     public void Execute(int index)
     {
         GridCell cell = GridCells[index];
 
-        if (cell.Mass <= 0f)
+        if (cell.LastTouchedIteration != CurrentGridIteration || cell.Mass <= 0f)
         {
-            cell.Displacement = float3.zero;
-            cell.WeightedDisplacement = float3.zero;
-            GridCells[index] = cell;
             return;
         }
 
@@ -37,14 +34,13 @@ struct GridUpdateJob : IJobFor
         foreach (var collider in Colliders)
         {
             float3 displacedSupportPosition = supportPosition + cell.Displacement;
-            float phi = collider.GetSignedDistance(displacedSupportPosition);
-            if (phi <= 0f)
+            GridBoxCollider.CollisionResult collision = collider.Collide(displacedSupportPosition);
+            if (collision.Collides)
             {
-                float3 normal = collider.GetNormal(displacedSupportPosition);
-                float3 projectedDisplacement = cell.Displacement - phi * normal;
-                float3 tangentialDisplacement = projectedDisplacement - normal * math.dot(projectedDisplacement, normal);
-                cell.Displacement = normal * math.dot(projectedDisplacement, normal) +
-                                    tangentialDisplacement * math.saturate(1f - FrictionCoefficient);
+                float gap = math.min(0f, math.dot(collision.Normal, collision.PointOnCollider - supportPosition));
+                float penetration = math.dot(collision.Normal, cell.Displacement) - gap;
+                float radialImpulse = math.max(penetration, 0f);
+                cell.Displacement -= radialImpulse * collision.Normal;
             }
         }
 

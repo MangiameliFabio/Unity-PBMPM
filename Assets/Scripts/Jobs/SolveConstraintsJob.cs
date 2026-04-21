@@ -6,6 +6,8 @@ using Unity.Mathematics;
 partial struct SolveConstraintsJob : IJobEntity
 {
     public bool UseGridVolumePreservation;
+    public float LiquidHydroFactor;
+    public float LiquidViscosityFactor;
 
     private void Execute(ref ParticleComponent particle)
     {
@@ -20,8 +22,8 @@ partial struct SolveConstraintsJob : IJobEntity
         float3x3 dHydro = float3x3.identity * (liquidDensity - 1f - c);
         float3x3 dVisc = -(D - c * float3x3.identity);
 
-        D += particle.hydroFactor * dHydro;
-        D += particle.viscFactor * dVisc;
+        D += LiquidHydroFactor * dHydro;
+        D += LiquidViscosityFactor * dVisc;
 
         particle.DeformationDisplacement = D;
         particle.LiquidDensity = liquidDensity;

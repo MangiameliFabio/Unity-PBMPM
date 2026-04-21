@@ -11,6 +11,7 @@ partial struct ParticleToGridJob : IJobEntity
     [ReadOnly] public NativeArray<Entity> GridEntities;
     [ReadOnly] public float DeltaTime;
     [ReadOnly] public GridInterpolationMode InterpolationMode;
+    [ReadOnly] public int CurrentGridIteration;
 
     private void Execute(ref ParticleComponent particle)
     {
@@ -63,6 +64,16 @@ partial struct ParticleToGridJob : IJobEntity
                             (particle.Displacement + math.mul(particle.DeformationDisplacement, relativePosition)); //APIC Formula 8
 
                         GridCell cell = gridCells[cellIndex];
+
+                        if (cell.LastTouchedIteration != CurrentGridIteration)
+                        {
+                            cell.LastTouchedIteration = CurrentGridIteration;
+                            cell.Mass = 0f;
+                            cell.Volume = 0f;
+                            cell.Displacement = float3.zero;
+                            cell.WeightedDisplacement = float3.zero;
+                        }
+
                         cell.Mass += massContribution;
                         cell.WeightedDisplacement += displacementContribution;
                         cell.Volume += weight * particle.Volume;
@@ -110,6 +121,15 @@ partial struct ParticleToGridJob : IJobEntity
                                                       (particle.Displacement + math.mul(particle.DeformationDisplacement, relativePosition));
 
                     GridCell cell = gridCells[cellIndex];
+                    if (cell.LastTouchedIteration != CurrentGridIteration)
+                    {
+                        cell.LastTouchedIteration = CurrentGridIteration;
+                        cell.Mass = 0f;
+                        cell.Volume = 0f;
+                        cell.Displacement = float3.zero;
+                        cell.WeightedDisplacement = float3.zero;
+                    }
+
                     cell.Mass += massContribution;
                     cell.WeightedDisplacement += displacementContribution;
                     cell.Volume += weight * particle.Volume;
