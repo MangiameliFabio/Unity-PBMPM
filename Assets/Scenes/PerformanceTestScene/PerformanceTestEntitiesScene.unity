@@ -130,7 +130,7 @@ GameObject:
   - component: {fileID: 12615802}
   - component: {fileID: 12615801}
   m_Layer: 0
-  m_Name: GridLeft
+  m_Name: MainGrid
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

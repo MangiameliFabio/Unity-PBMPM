@@ -7,7 +7,6 @@ using Unity.Mathematics;
 struct GridUpdateJob : IJobFor
 {
     public NativeArray<GridCell> GridCells;
-    [ReadOnly] public float DeltaTime;
     [ReadOnly] public NativeArray<GridBoxCollider> Colliders;
     [ReadOnly] public GridComponent Grid;
     [ReadOnly] public GridInterpolationMode InterpolationMode;
@@ -23,14 +22,10 @@ struct GridUpdateJob : IJobFor
         }
 
         float3 supportPosition = GridUtilities.GetGridPosition(Grid, cell.Coordinates, InterpolationMode);
-        //MPM Section 8.3, “Eulerian/Lagrangian Momentum” and  Section 10, “Explicit Time Integration”
-        // Convert the mass-weighted grid quantity back into a candidate displacement
-        // and then apply gravity directly in displacement form.
+
+        // Convert the mass-weighted grid quantity back into a candidate displacement.
         cell.Displacement = cell.WeightedDisplacement / cell.Mass;
-        cell.Displacement += PBMPMSolverSystem.Gravity * (DeltaTime * DeltaTime);
 
-
-        //MPM Section 12.1 Collision Objects
         foreach (var collider in Colliders)
         {
             float3 displacedSupportPosition = supportPosition + cell.Displacement;

@@ -17,6 +17,9 @@ partial struct PBMPMSolverSystem : ISystem
     private BufferLookup<GridCell> _gridCellsLookupRW;
     private BufferLookup<GridCell> _gridCellsLookupRO;
     private NativeList<GridBoxCollider> _colliders;
+    private NativeParallelMultiHashMap<int, GridTileParticleRecord> _tileParticlesScratch;
+    private NativeParallelHashSet<int> _activeTileSetScratch;
+    private NativeList<int> _activeTilesScratch;
     private Entity _debugStatsEntity;
 
     private float _currentTime;
@@ -40,6 +43,9 @@ partial struct PBMPMSolverSystem : ISystem
         _gridCellsLookupRW = state.GetBufferLookup<GridCell>(false);
         _gridCellsLookupRO = state.GetBufferLookup<GridCell>(true);
         _colliders = new NativeList<GridBoxCollider>(Allocator.Persistent);
+        _tileParticlesScratch = new NativeParallelMultiHashMap<int, GridTileParticleRecord>(1, Allocator.Persistent);
+        _activeTileSetScratch = new NativeParallelHashSet<int>(1, Allocator.Persistent);
+        _activeTilesScratch = new NativeList<int>(1, Allocator.Persistent);
         _debugStatsEntity = state.EntityManager.CreateEntity(typeof(SimulationDebugStats));
     }
 
@@ -56,6 +62,7 @@ partial struct PBMPMSolverSystem : ISystem
 
         _fixedDeltaTime = 1f / _config.UpdateFrequency;
         _solverSubsteps = (int)(_remainingTime / _fixedDeltaTime);
+        _solverSubsteps = math.min(_solverSubsteps, 10);
         _remainingTime -= _solverSubsteps * _fixedDeltaTime;
 
         _gridLookup.Update(ref state);
@@ -78,6 +85,21 @@ partial struct PBMPMSolverSystem : ISystem
         if (_colliders.IsCreated)
         {
             _colliders.Dispose();
+        }
+
+        if (_tileParticlesScratch.IsCreated)
+        {
+            _tileParticlesScratch.Dispose();
+        }
+
+        if (_activeTileSetScratch.IsCreated)
+        {
+            _activeTileSetScratch.Dispose();
+        }
+
+        if (_activeTilesScratch.IsCreated)
+        {
+            _activeTilesScratch.Dispose();
         }
     }
 
@@ -122,7 +144,12 @@ partial struct PBMPMSolverSystem : ISystem
             for (int iterationIndex = 0; iterationIndex < iterationCount; iterationIndex++)
             {
                 _gridIterationId++;
-                RunSolverIteration(ref state, gridEntities, interpolationMode, useGridVolumePreservation);
+                RunSolverIteration(
+                    ref state,
+                    gridEntities,
+                    interpolationMode,
+                    useGridVolumePreservation,
+                    applyParticleGravity: iterationIndex == 0);
             }
 
             ScheduleIntegrateParticles(ref state);
@@ -134,12 +161,17 @@ partial struct PBMPMSolverSystem : ISystem
     }
 
     [BurstCompile]
-    private void RunSolverIteration(ref SystemState state, NativeArray<Entity> gridEntities, GridInterpolationMode interpolationMode, bool useGridVolumePreservation)
+    private void RunSolverIteration(
+        ref SystemState state,
+        NativeArray<Entity> gridEntities,
+        GridInterpolationMode interpolationMode,
+        bool useGridVolumePreservation,
+        bool applyParticleGravity)
     {
         ScheduleSolveConstraints(ref state, useGridVolumePreservation);
         ScheduleParticleToGrid(ref state, gridEntities, interpolationMode);
         ScheduleUpdateGrid(ref state, gridEntities, interpolationMode);
-        ScheduleGridToParticle(ref state, gridEntities, interpolationMode, useGridVolumePreservation);
+        ScheduleGridToParticle(ref state, gridEntities, interpolationMode, useGridVolumePreservation, applyParticleGravity);
     }
 
     [BurstCompile]
@@ -182,13 +214,16 @@ partial struct PBMPMSolverSystem : ISystem
     [BurstCompile]
     private void ScheduleParticleToGrid(ref SystemState state, NativeArray<Entity> gridEntities, GridInterpolationMode interpolationMode)
     {
-        int particleCapacity = math.max(1, _particleQuery.CalculateEntityCount() * 8);
+        int tileParticleCapacity = math.max(1, _particleQuery.CalculateEntityCount() * 8);
 
         foreach (var gridEntity in gridEntities)
         {
             GridComponent grid = _gridLookup[gridEntity];
-            var tileParticles = new NativeParallelMultiHashMap<int, GridTileParticleRecord>(particleCapacity, Allocator.TempJob);
-            var activeTileSet = new NativeParallelHashSet<int>(particleCapacity, Allocator.TempJob);
+            int activeTileCapacity = GetActiveTileCapacity(grid);
+            EnsureParticleToGridScratchCapacity(tileParticleCapacity, activeTileCapacity);
+            _tileParticlesScratch.Clear();
+            _activeTileSetScratch.Clear();
+            _activeTilesScratch.Clear();
 
             var particleToGridTileJob = new ParticleToGridTileJob
             {
@@ -198,21 +233,21 @@ partial struct PBMPMSolverSystem : ISystem
                 TargetGrid = grid,
                 InterpolationMode = interpolationMode,
                 TileSize = GridTileSize,
-                TileParticles = tileParticles.AsParallelWriter(),
-                ActiveTiles = activeTileSet.AsParallelWriter()
+                TileParticles = _tileParticlesScratch.AsParallelWriter(),
+                ActiveTiles = _activeTileSetScratch.AsParallelWriter()
             };
 
             state.Dependency = particleToGridTileJob.ScheduleParallel(state.Dependency);
             state.Dependency.Complete();
 
-            NativeArray<int> activeTiles = activeTileSet.ToNativeArray(Allocator.TempJob);
-            if (activeTiles.Length > 0)
+            CollectActiveTiles();
+            if (_activeTilesScratch.Length > 0)
             {
                 NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
                 var accumulateGridTilesJob = new AccumulateGridTilesJob
                 {
-                    ActiveTiles = activeTiles,
-                    TileParticles = tileParticles,
+                    ActiveTiles = _activeTilesScratch.AsArray(),
+                    TileParticles = _tileParticlesScratch,
                     GridCells = gridCells,
                     Grid = grid,
                     InterpolationMode = interpolationMode,
@@ -220,13 +255,43 @@ partial struct PBMPMSolverSystem : ISystem
                     TileSize = GridTileSize
                 };
 
-                state.Dependency = accumulateGridTilesJob.ScheduleParallel(activeTiles.Length, 1, state.Dependency);
+                state.Dependency = accumulateGridTilesJob.ScheduleParallel(_activeTilesScratch.Length, 1, state.Dependency);
                 state.Dependency.Complete();
             }
+        }
+    }
 
-            activeTiles.Dispose();
-            activeTileSet.Dispose();
-            tileParticles.Dispose();
+    private int GetActiveTileCapacity(GridComponent grid)
+    {
+        int3 nodeCounts = GridUtilities.GetNodeCounts(grid);
+        int3 tileCounts = GridUtilities.GetTileCounts(nodeCounts, GridTileSize);
+        return math.max(1, tileCounts.x * tileCounts.y * tileCounts.z);
+    }
+
+    private void EnsureParticleToGridScratchCapacity(int tileParticleCapacity, int activeTileCapacity)
+    {
+        if (_tileParticlesScratch.Capacity < tileParticleCapacity)
+        {
+            _tileParticlesScratch.Capacity = tileParticleCapacity;
+        }
+
+        if (_activeTileSetScratch.Capacity < activeTileCapacity)
+        {
+            _activeTileSetScratch.Capacity = activeTileCapacity;
+        }
+
+        if (_activeTilesScratch.Capacity < activeTileCapacity)
+        {
+            _activeTilesScratch.Capacity = activeTileCapacity;
+        }
+    }
+
+    private void CollectActiveTiles()
+    {
+        var activeTileEnumerator = _activeTileSetScratch.GetEnumerator();
+        while (activeTileEnumerator.MoveNext())
+        {
+            _activeTilesScratch.AddNoResize(activeTileEnumerator.Current);
         }
     }
 
@@ -240,7 +305,6 @@ partial struct PBMPMSolverSystem : ISystem
             {
                 Colliders = _colliders.AsArray(),
                 GridCells = gridCells,
-                DeltaTime = _fixedDeltaTime,
                 Grid = _gridLookup[gridEntity],
                 InterpolationMode = interpolationMode,
                 CurrentGridIteration = _gridIterationId
@@ -251,7 +315,12 @@ partial struct PBMPMSolverSystem : ISystem
     }
 
     [BurstCompile]
-    private void ScheduleGridToParticle(ref SystemState state, NativeArray<Entity> gridEntities, GridInterpolationMode interpolationMode, bool useGridVolumePreservation)
+    private void ScheduleGridToParticle(
+        ref SystemState state,
+        NativeArray<Entity> gridEntities,
+        GridInterpolationMode interpolationMode,
+        bool useGridVolumePreservation,
+        bool applyParticleGravity)
     {
         var gridToParticleJob = new GridToParticleJob
         {
@@ -259,6 +328,8 @@ partial struct PBMPMSolverSystem : ISystem
             GridCellsLookup = _gridCellsLookupRO,
             GridEntities = gridEntities,
             DeltaTime = _fixedDeltaTime,
+            GravityDisplacement = Gravity * (_fixedDeltaTime * _fixedDeltaTime),
+            ApplyParticleGravity = applyParticleGravity,
             InterpolationMode = interpolationMode,
             UseGridVolumePreservation = useGridVolumePreservation,
             CurrentGridIteration = _gridIterationId

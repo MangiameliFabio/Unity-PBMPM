@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Mathematics;
 using UnityEngine;
 
 public class SimulationDebugOverlay : MonoBehaviour
@@ -12,6 +13,7 @@ public class SimulationDebugOverlay : MonoBehaviour
     private int _sampleIndex;
     private int _filledSamples;
     private bool _isVisible = true;
+    private Vector2 _scrollPosition;
     private string _updateFrequencyText;
     private string _iterationCountText;
     private GUIStyle _labelStyle;
@@ -99,7 +101,15 @@ public class SimulationDebugOverlay : MonoBehaviour
         float averageIterations = GetAverage(_iterationSamples, _filledSamples);
         RefreshDebugEntries();
 
-        GUILayout.BeginArea(new Rect(12f, 12f, 420f, Mathf.Min(Screen.height - 24f, 720f)), _boxStyle);
+        float panelWidth = Mathf.Min(Screen.width - 24f, 460f);
+        float panelHeight = Mathf.Max(220f, Screen.height - 24f);
+        GUILayout.BeginArea(new Rect(12f, 12f, panelWidth, panelHeight), _boxStyle);
+        _scrollPosition = GUILayout.BeginScrollView(
+            _scrollPosition,
+            false,
+            true,
+            GUILayout.Width(panelWidth - 24f),
+            GUILayout.Height(panelHeight - 20f));
         GUILayout.BeginHorizontal();
         GUILayout.FlexibleSpace();
         if (GUILayout.Button("Hide Debug", GUILayout.Width(110f), GUILayout.Height(26f)))
@@ -216,6 +226,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         {
             ResetScene();
         }
+        GUILayout.EndScrollView();
         GUILayout.EndArea();
     }
 
@@ -429,118 +440,170 @@ public class SimulationDebugOverlay : MonoBehaviour
 
     private void RefreshDebugEntries()
     {
-        SyncGridEntries(FindObjectsByType<GridAuthoring>(FindObjectsSortMode.InstanceID));
-        SyncSpawnerEntries(FindObjectsByType<SpawnShapeAuthoring>(FindObjectsSortMode.InstanceID));
-    }
+        GridAuthoring[] gridAuthorings = FindObjectsByType<GridAuthoring>(FindObjectsSortMode.InstanceID);
+        SpawnShapeAuthoring[] spawnAuthorings = FindObjectsByType<SpawnShapeAuthoring>(FindObjectsSortMode.InstanceID);
 
-    private void SyncGridEntries(GridAuthoring[] grids)
-    {
-        Dictionary<int, GridDebugEntry> previousEntries = new Dictionary<int, GridDebugEntry>(_gridEntries.Count);
-        foreach (GridDebugEntry entry in _gridEntries)
+        if (TryGetEntityManager(out EntityManager entityManager))
         {
-            if (entry.Authoring != null)
-            {
-                previousEntries[entry.Authoring.GetInstanceID()] = entry;
-            }
+            SyncGridEntries(entityManager, gridAuthorings);
+            SyncSpawnerEntries(entityManager, spawnAuthorings);
+            return;
         }
 
         _gridEntries.Clear();
-        for (int index = 0; index < grids.Length; index++)
+        _spawnerEntries.Clear();
+    }
+
+    private bool TryGetEntityManager(out EntityManager entityManager)
+    {
+        World world = World.DefaultGameObjectInjectionWorld;
+        if (world == null || !world.IsCreated)
         {
-            GridAuthoring grid = grids[index];
-            int instanceId = grid.GetInstanceID();
-            if (!previousEntries.TryGetValue(instanceId, out GridDebugEntry entry))
+            entityManager = default;
+            return false;
+        }
+
+        entityManager = world.EntityManager;
+        return true;
+    }
+
+    private void SyncGridEntries(EntityManager entityManager, GridAuthoring[] grids)
+    {
+        Dictionary<Entity, GridDebugEntry> previousEntries = new Dictionary<Entity, GridDebugEntry>(_gridEntries.Count);
+        foreach (GridDebugEntry entry in _gridEntries)
+        {
+            if (entry.RuntimeEntity != Entity.Null)
+            {
+                previousEntries[entry.RuntimeEntity] = entry;
+            }
+        }
+
+        Dictionary<int, GridAuthoring> authoringById = new Dictionary<int, GridAuthoring>(grids.Length);
+        foreach (GridAuthoring grid in grids)
+        {
+            authoringById[grid.GetInstanceID()] = grid;
+        }
+
+        _gridEntries.Clear();
+        EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
+        {
+            All = new[] { ComponentType.ReadOnly<GridComponent>() },
+            None = new[] { ComponentType.ReadOnly<Prefab>() }
+        });
+
+        using NativeArray<Entity> entities = query.ToEntityArray(Allocator.Temp);
+        for (int index = 0; index < entities.Length; index++)
+        {
+            Entity entity = entities[index];
+            if (!previousEntries.TryGetValue(entity, out GridDebugEntry entry))
             {
                 entry = new GridDebugEntry();
             }
 
-            entry.Authoring = grid;
-            entry.Label = $"Grid {index + 1}: {grid.name}";
+            entry.RuntimeEntity = entity;
+            entry.Authoring = TryResolveGridAuthoring(entityManager, entity, authoringById);
+            entry.Label = entry.Authoring != null ? $"Grid {index + 1}: {entry.Authoring.name}" : $"Grid {index + 1}";
             if (string.IsNullOrWhiteSpace(entry.CellSizeText))
             {
-                entry.CellSizeText = grid.cellSize.ToString("0.###");
+                GridComponent grid = entityManager.GetComponentData<GridComponent>(entity);
+                entry.CellSizeText = grid.CellSize.ToString("0.###");
             }
 
             _gridEntries.Add(entry);
         }
     }
 
-    private void SyncSpawnerEntries(SpawnShapeAuthoring[] spawners)
+    private void SyncSpawnerEntries(EntityManager entityManager, SpawnShapeAuthoring[] spawners)
     {
-        Dictionary<int, SpawnerDebugEntry> previousEntries = new Dictionary<int, SpawnerDebugEntry>(_spawnerEntries.Count);
+        Dictionary<Entity, SpawnerDebugEntry> previousEntries = new Dictionary<Entity, SpawnerDebugEntry>(_spawnerEntries.Count);
         foreach (SpawnerDebugEntry entry in _spawnerEntries)
         {
-            if (entry.Authoring != null)
+            if (entry.RuntimeEntity != Entity.Null)
             {
-                previousEntries[entry.Authoring.GetInstanceID()] = entry;
+                previousEntries[entry.RuntimeEntity] = entry;
             }
         }
 
-        _spawnerEntries.Clear();
-        for (int index = 0; index < spawners.Length; index++)
+        Dictionary<int, SpawnShapeAuthoring> authoringById = new Dictionary<int, SpawnShapeAuthoring>(spawners.Length);
+        foreach (SpawnShapeAuthoring spawner in spawners)
         {
-            SpawnShapeAuthoring spawner = spawners[index];
-            int instanceId = spawner.GetInstanceID();
-            if (!previousEntries.TryGetValue(instanceId, out SpawnerDebugEntry entry))
+            authoringById[spawner.GetInstanceID()] = spawner;
+        }
+
+        _spawnerEntries.Clear();
+        EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
+        {
+            All = new[] { ComponentType.ReadOnly<SpawnShapeComponent>() },
+            None = new[] { ComponentType.ReadOnly<Prefab>() }
+        });
+
+        using NativeArray<Entity> entities = query.ToEntityArray(Allocator.Temp);
+        for (int index = 0; index < entities.Length; index++)
+        {
+            Entity entity = entities[index];
+            SpawnShapeComponent shape = entityManager.GetComponentData<SpawnShapeComponent>(entity);
+            if (!previousEntries.TryGetValue(entity, out SpawnerDebugEntry entry))
             {
                 entry = new SpawnerDebugEntry();
             }
 
-            entry.Authoring = spawner;
-            entry.Label = $"Spawner {index + 1}: {spawner.name}";
+            entry.RuntimeEntity = entity;
+            entry.Authoring = TryResolveSpawnAuthoring(entityManager, entity, authoringById);
+            entry.Label = entry.Authoring != null ? $"Spawner {index + 1}: {entry.Authoring.name}" : $"Spawner {index + 1}";
             if (string.IsNullOrWhiteSpace(entry.SpawnAmountXText))
             {
-                entry.SpawnAmountXText = spawner.spawnAmountX.ToString();
+                entry.SpawnAmountXText = shape.SpawnAmount.x.ToString();
             }
 
             if (string.IsNullOrWhiteSpace(entry.SpawnAmountYText))
             {
-                entry.SpawnAmountYText = spawner.spawnAmountY.ToString();
+                entry.SpawnAmountYText = shape.SpawnAmount.y.ToString();
             }
 
             if (string.IsNullOrWhiteSpace(entry.SpawnAmountZText))
             {
-                entry.SpawnAmountZText = spawner.spawnAmountZ.ToString();
+                entry.SpawnAmountZText = shape.SpawnAmount.z.ToString();
             }
 
+            float3 extents = GetSpawnExtents(shape);
             if (string.IsNullOrWhiteSpace(entry.ExtentXText))
             {
-                entry.ExtentXText = spawner.spawnBounds.extents.x.ToString("0.###");
+                entry.ExtentXText = extents.x.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.ExtentYText))
             {
-                entry.ExtentYText = spawner.spawnBounds.extents.y.ToString("0.###");
+                entry.ExtentYText = extents.y.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.ExtentZText))
             {
-                entry.ExtentZText = spawner.spawnBounds.extents.z.ToString("0.###");
+                entry.ExtentZText = extents.z.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.HydroFactorText))
             {
-                entry.HydroFactorText = spawner.liquidHydroFactor.ToString("0.###");
+                entry.HydroFactorText = shape.LiquidHydroFactor.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.ViscosityFactorText))
             {
-                entry.ViscosityFactorText = spawner.liquidViscosityFactor.ToString("0.###");
+                entry.ViscosityFactorText = shape.LiquidViscosityFactor.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.AlbedoRText))
             {
-                entry.AlbedoRText = spawner.particleAlbedo.r.ToString("0.###");
+                entry.AlbedoRText = shape.ParticleAlbedo.x.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.AlbedoGText))
             {
-                entry.AlbedoGText = spawner.particleAlbedo.g.ToString("0.###");
+                entry.AlbedoGText = shape.ParticleAlbedo.y.ToString("0.###");
             }
 
             if (string.IsNullOrWhiteSpace(entry.AlbedoBText))
             {
-                entry.AlbedoBText = spawner.particleAlbedo.b.ToString("0.###");
+                entry.AlbedoBText = shape.ParticleAlbedo.z.ToString("0.###");
             }
 
             _spawnerEntries.Add(entry);
@@ -667,44 +730,140 @@ public class SimulationDebugOverlay : MonoBehaviour
 
     private void RebuildRuntimeGrids(EntityManager entityManager)
     {
-        EntityQuery query = entityManager.CreateEntityQuery(
-            ComponentType.ReadWrite<GridComponent>(),
-            ComponentType.ReadWrite<GridCell>(),
-            ComponentType.ReadOnly<GridAuthoringReference>());
-
-        using NativeArray<Entity> entities = query.ToEntityArray(Allocator.Temp);
-        foreach (Entity entity in entities)
+        foreach (GridDebugEntry entry in _gridEntries)
         {
-            GridAuthoringReference reference = entityManager.GetComponentData<GridAuthoringReference>(entity);
-            GridAuthoring authoring = FindAuthoringByInstanceId(_gridEntries, reference.AuthoringInstanceId);
-            if (authoring == null)
+            if (entry.RuntimeEntity == Entity.Null ||
+                !entityManager.Exists(entry.RuntimeEntity) ||
+                !entityManager.HasComponent<GridComponent>(entry.RuntimeEntity) ||
+                !entityManager.HasBuffer<GridCell>(entry.RuntimeEntity))
             {
                 continue;
             }
 
-            entityManager.SetComponentData(entity, authoring.CreateGridComponent());
-            DynamicBuffer<GridCell> gridCells = entityManager.GetBuffer<GridCell>(entity);
-            authoring.RebuildGridCells(gridCells);
+            GridComponent grid;
+            if (entry.Authoring != null)
+            {
+                grid = entry.Authoring.CreateGridComponent();
+            }
+            else
+            {
+                grid = entityManager.GetComponentData<GridComponent>(entry.RuntimeEntity);
+                if (float.TryParse(entry.CellSizeText, out float parsedCellSize))
+                {
+                    grid.CellSize = Mathf.Max(GridAuthoring.MinCellSize, parsedCellSize);
+                }
+            }
+
+            entityManager.SetComponentData(entry.RuntimeEntity, grid);
+            DynamicBuffer<GridCell> gridCells = entityManager.GetBuffer<GridCell>(entry.RuntimeEntity);
+            RebuildGridCells(gridCells, grid);
+            entry.CellSizeText = grid.CellSize.ToString("0.###");
         }
     }
 
     private void RebuildRuntimeSpawners(EntityManager entityManager)
     {
-        EntityQuery query = entityManager.CreateEntityQuery(
-            ComponentType.ReadWrite<SpawnShapeComponent>(),
-            ComponentType.ReadOnly<SpawnShapeAuthoringReference>());
-
-        using NativeArray<Entity> entities = query.ToEntityArray(Allocator.Temp);
-        foreach (Entity entity in entities)
+        foreach (SpawnerDebugEntry entry in _spawnerEntries)
         {
-            SpawnShapeAuthoringReference reference = entityManager.GetComponentData<SpawnShapeAuthoringReference>(entity);
-            SpawnShapeAuthoring authoring = FindAuthoringByInstanceId(_spawnerEntries, reference.AuthoringInstanceId);
-            if (authoring == null)
+            if (entry.RuntimeEntity == Entity.Null ||
+                !entityManager.Exists(entry.RuntimeEntity) ||
+                !entityManager.HasComponent<SpawnShapeComponent>(entry.RuntimeEntity))
             {
                 continue;
             }
 
-            entityManager.SetComponentData(entity, authoring.CreateSpawnShapeComponent());
+            SpawnShapeComponent shape;
+            if (entry.Authoring != null)
+            {
+                shape = entry.Authoring.CreateSpawnShapeComponent();
+            }
+            else
+            {
+                shape = entityManager.GetComponentData<SpawnShapeComponent>(entry.RuntimeEntity);
+                int3 spawnAmount = shape.SpawnAmount;
+                if (int.TryParse(entry.SpawnAmountXText, out int parsedX))
+                {
+                    spawnAmount.x = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedX);
+                }
+
+                if (int.TryParse(entry.SpawnAmountYText, out int parsedY))
+                {
+                    spawnAmount.y = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedY);
+                }
+
+                if (int.TryParse(entry.SpawnAmountZText, out int parsedZ))
+                {
+                    spawnAmount.z = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedZ);
+                }
+
+                float3 extents = GetSpawnExtents(shape);
+                if (float.TryParse(entry.ExtentXText, out float parsedExtentX))
+                {
+                    extents.x = Mathf.Max(0f, parsedExtentX);
+                }
+
+                if (float.TryParse(entry.ExtentYText, out float parsedExtentY))
+                {
+                    extents.y = Mathf.Max(0f, parsedExtentY);
+                }
+
+                if (float.TryParse(entry.ExtentZText, out float parsedExtentZ))
+                {
+                    extents.z = Mathf.Max(0f, parsedExtentZ);
+                }
+
+                if (float.TryParse(entry.HydroFactorText, out float parsedHydroFactor))
+                {
+                    shape.LiquidHydroFactor = Mathf.Max(0f, parsedHydroFactor);
+                }
+
+                if (float.TryParse(entry.ViscosityFactorText, out float parsedViscosityFactor))
+                {
+                    shape.LiquidViscosityFactor = Mathf.Max(0f, parsedViscosityFactor);
+                }
+
+                float4 particleAlbedo = shape.ParticleAlbedo;
+                if (float.TryParse(entry.AlbedoRText, out float parsedAlbedoR))
+                {
+                    particleAlbedo.x = Mathf.Clamp01(parsedAlbedoR);
+                }
+
+                if (float.TryParse(entry.AlbedoGText, out float parsedAlbedoG))
+                {
+                    particleAlbedo.y = Mathf.Clamp01(parsedAlbedoG);
+                }
+
+                if (float.TryParse(entry.AlbedoBText, out float parsedAlbedoB))
+                {
+                    particleAlbedo.z = Mathf.Clamp01(parsedAlbedoB);
+                }
+
+                shape.SpawnAmount = spawnAmount;
+                shape.LocalExtents = extents;
+                shape.LocalStart = new float3(
+                    spawnAmount.x > 1 ? -extents.x : 0f,
+                    spawnAmount.y > 1 ? -extents.y : 0f,
+                    spawnAmount.z > 1 ? -extents.z : 0f);
+                shape.LocalStep = new float3(
+                    spawnAmount.x > 1 ? extents.x * 2f / (spawnAmount.x - 1) : 0f,
+                    spawnAmount.y > 1 ? extents.y * 2f / (spawnAmount.y - 1) : 0f,
+                    spawnAmount.z > 1 ? extents.z * 2f / (spawnAmount.z - 1) : 0f);
+                shape.ParticleAlbedo = particleAlbedo;
+            }
+
+            entityManager.SetComponentData(entry.RuntimeEntity, shape);
+            float3 normalizedExtents = GetSpawnExtents(shape);
+            entry.SpawnAmountXText = shape.SpawnAmount.x.ToString();
+            entry.SpawnAmountYText = shape.SpawnAmount.y.ToString();
+            entry.SpawnAmountZText = shape.SpawnAmount.z.ToString();
+            entry.ExtentXText = normalizedExtents.x.ToString("0.###");
+            entry.ExtentYText = normalizedExtents.y.ToString("0.###");
+            entry.ExtentZText = normalizedExtents.z.ToString("0.###");
+            entry.HydroFactorText = shape.LiquidHydroFactor.ToString("0.###");
+            entry.ViscosityFactorText = shape.LiquidViscosityFactor.ToString("0.###");
+            entry.AlbedoRText = shape.ParticleAlbedo.x.ToString("0.###");
+            entry.AlbedoGText = shape.ParticleAlbedo.y.ToString("0.###");
+            entry.AlbedoBText = shape.ParticleAlbedo.z.ToString("0.###");
         }
     }
 
@@ -749,30 +908,71 @@ public class SimulationDebugOverlay : MonoBehaviour
         _filledSamples = 0;
     }
 
-    private static GridAuthoring FindAuthoringByInstanceId(List<GridDebugEntry> entries, int instanceId)
+    private static GridAuthoring TryResolveGridAuthoring(EntityManager entityManager, Entity entity, Dictionary<int, GridAuthoring> authoringById)
     {
-        foreach (GridDebugEntry entry in entries)
+        if (!entityManager.HasComponent<GridAuthoringReference>(entity))
         {
-            if (entry.Authoring != null && entry.Authoring.GetInstanceID() == instanceId)
-            {
-                return entry.Authoring;
-            }
+            return null;
         }
 
-        return null;
+        GridAuthoringReference reference = entityManager.GetComponentData<GridAuthoringReference>(entity);
+        authoringById.TryGetValue(reference.AuthoringInstanceId, out GridAuthoring authoring);
+        return authoring;
     }
 
-    private static SpawnShapeAuthoring FindAuthoringByInstanceId(List<SpawnerDebugEntry> entries, int instanceId)
+    private static SpawnShapeAuthoring TryResolveSpawnAuthoring(EntityManager entityManager, Entity entity, Dictionary<int, SpawnShapeAuthoring> authoringById)
     {
-        foreach (SpawnerDebugEntry entry in entries)
+        if (!entityManager.HasComponent<SpawnShapeAuthoringReference>(entity))
         {
-            if (entry.Authoring != null && entry.Authoring.GetInstanceID() == instanceId)
+            return null;
+        }
+
+        SpawnShapeAuthoringReference reference = entityManager.GetComponentData<SpawnShapeAuthoringReference>(entity);
+        authoringById.TryGetValue(reference.AuthoringInstanceId, out SpawnShapeAuthoring authoring);
+        return authoring;
+    }
+
+    private static float3 GetSpawnExtents(SpawnShapeComponent shape)
+    {
+        if (math.any(shape.LocalExtents != float3.zero))
+        {
+            return shape.LocalExtents;
+        }
+
+        return new float3(
+            shape.SpawnAmount.x > 1 ? shape.LocalStep.x * (shape.SpawnAmount.x - 1) * 0.5f : 0f,
+            shape.SpawnAmount.y > 1 ? shape.LocalStep.y * (shape.SpawnAmount.y - 1) * 0.5f : 0f,
+            shape.SpawnAmount.z > 1 ? shape.LocalStep.z * (shape.SpawnAmount.z - 1) * 0.5f : 0f);
+    }
+
+    private static void RebuildGridCells(DynamicBuffer<GridCell> gridCells, GridComponent grid)
+    {
+        int3 cellCounts = GridUtilities.GetCellCounts(grid);
+        int3 nodeCounts = cellCounts + 1;
+
+        gridCells.Clear();
+        gridCells.EnsureCapacity(nodeCounts.x * nodeCounts.y * nodeCounts.z);
+
+        for (int x = 0; x < nodeCounts.x; x++)
+        {
+            for (int y = 0; y < nodeCounts.y; y++)
             {
-                return entry.Authoring;
+                for (int z = 0; z < nodeCounts.z; z++)
+                {
+                    gridCells.Add(new GridCell
+                    {
+                        Coordinates = new int3(x, y, z),
+                        WeightedDisplacement = float3.zero,
+                        Displacement = float3.zero,
+                        Mass = 0f,
+                        Volume = 0f,
+                        LastTouchedIteration = 0
+                    });
+                }
             }
         }
 
-        return null;
+        gridCells.TrimExcess();
     }
 
     private static float GetAverage(float[] values, int count)
@@ -815,6 +1015,7 @@ public class SimulationDebugOverlay : MonoBehaviour
     private class GridDebugEntry
     {
         public GridAuthoring Authoring;
+        public Entity RuntimeEntity;
         public string Label;
         public string CellSizeText;
     }
@@ -822,6 +1023,7 @@ public class SimulationDebugOverlay : MonoBehaviour
     private class SpawnerDebugEntry
     {
         public SpawnShapeAuthoring Authoring;
+        public Entity RuntimeEntity;
         public string Label;
         public string SpawnAmountXText;
         public string SpawnAmountYText;

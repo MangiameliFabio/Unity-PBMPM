@@ -83,6 +83,7 @@ public class SpawnShapeAuthoring : MonoBehaviour
             LocalCenter = spawnBounds.center,
             LocalStart = localStart,
             LocalStep = localStep,
+            LocalExtents = halfSize,
             GlobalPosition = transform.position,
             LiquidHydroFactor = liquidHydroFactor,
             LiquidViscosityFactor = liquidViscosityFactor,
@@ -116,6 +117,7 @@ public struct SpawnShapeComponent : IComponentData
     public float3 LocalCenter;
     public float3 LocalStart;
     public float3 LocalStep;
+    public float3 LocalExtents;
 
     public float3 GlobalPosition;
     public float LiquidHydroFactor;

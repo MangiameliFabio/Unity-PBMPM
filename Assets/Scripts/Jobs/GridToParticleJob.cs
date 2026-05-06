@@ -10,6 +10,8 @@ partial struct GridToParticleJob : IJobEntity
     [ReadOnly] public BufferLookup<GridCell> GridCellsLookup;
     [ReadOnly] public NativeArray<Entity> GridEntities;
     [ReadOnly] public float DeltaTime;
+    [ReadOnly] public float3 GravityDisplacement;
+    [ReadOnly] public bool ApplyParticleGravity;
     [ReadOnly] public GridInterpolationMode InterpolationMode;
     [ReadOnly] public bool UseGridVolumePreservation;
     [ReadOnly] public int CurrentGridIteration;
@@ -127,6 +129,11 @@ partial struct GridToParticleJob : IJobEntity
         }
 
         particle.Displacement = displacement;
+        if (ApplyParticleGravity)
+        {
+            particle.Displacement += GravityDisplacement;
+        }
+
         particle.DeformationDisplacement = c * DeltaTime;
         particle.GridMeasuredLiquidDensity = math.max(gridMeasuredLiquidDensity, 1e-4f);
         if (UseGridVolumePreservation)
