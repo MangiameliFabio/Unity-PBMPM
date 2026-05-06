@@ -154,6 +154,8 @@ MonoBehaviour:
   interpolationMode: 1
   useGridVolumePreservation: 1
   useVisualSmoothing: 1
+  liquidHydroFactor: 0.15
+  liquidViscosityFactor: 0.02
 --- !u!4 &78092284
 Transform:
   m_ObjectHideFlags: 0
@@ -919,7 +921,7 @@ Transform:
   m_GameObject: {fileID: 1678046299}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -38.8, y: 17.9, z: 43.7}
+  m_LocalPosition: {x: -5.1, y: 40.9, z: 50.8}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -941,9 +943,9 @@ MonoBehaviour:
     m_Center: {x: 0, y: 0, z: 0}
     m_Extent: {x: 10, y: 10, z: 10}
   boundsColor: {r: 1, g: 0.07980804, b: 0, a: 1}
-  spawnAmountX: 25
-  spawnAmountY: 25
-  spawnAmountZ: 25
+  spawnAmountX: 30
+  spawnAmountY: 30
+  spawnAmountZ: 30
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

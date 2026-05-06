@@ -6,9 +6,13 @@ using UnityEngine;
 public class SpawnShapeAuthoring : MonoBehaviour
 {
     private static readonly Vector3 DefaultBoundsSize = Vector3.one;
+    public const int MinSpawnAmount = 1;
 
     public Bounds spawnBounds = new Bounds(Vector3.zero, DefaultBoundsSize);
     public Color boundsColor = Color.cyan;
+    public float liquidHydroFactor = 0.15f;
+    public float liquidViscosityFactor = 0.001f;
+    public Color particleAlbedo = Color.white;
     
     public int spawnAmountX = 1;
     public int spawnAmountY = 1;
@@ -30,6 +34,17 @@ public class SpawnShapeAuthoring : MonoBehaviour
         {
             spawnBounds = new Bounds(spawnBounds.center, DefaultBoundsSize);
         }
+
+        spawnAmountX = Mathf.Max(MinSpawnAmount, spawnAmountX);
+        spawnAmountY = Mathf.Max(MinSpawnAmount, spawnAmountY);
+        spawnAmountZ = Mathf.Max(MinSpawnAmount, spawnAmountZ);
+        liquidHydroFactor = Mathf.Max(0f, liquidHydroFactor);
+        liquidViscosityFactor = Mathf.Max(0f, liquidViscosityFactor);
+    }
+
+    public void ValidateRuntimeValues()
+    {
+        EnsureVisibleBounds();
     }
     
     private void OnDrawGizmos()
@@ -40,22 +55,16 @@ public class SpawnShapeAuthoring : MonoBehaviour
         Gizmos.DrawWireCube(spawnBounds.center, spawnBounds.size);
         Gizmos.matrix = oldMatrix;
     }
-}
 
-public class SpawnShapeAuthoringBaker : Baker<SpawnShapeAuthoring>
-{
-    public override void Bake(SpawnShapeAuthoring authoring)
+    public SpawnShapeComponent CreateSpawnShapeComponent()
     {
-        var entity = GetEntity(authoring, TransformUsageFlags.Dynamic);
-
         int3 spawnAmount = new int3(
-            math.max(1, authoring.spawnAmountX),
-            math.max(1, authoring.spawnAmountY),
-            math.max(1, authoring.spawnAmountZ)
+            math.max(MinSpawnAmount, spawnAmountX),
+            math.max(MinSpawnAmount, spawnAmountY),
+            math.max(MinSpawnAmount, spawnAmountZ)
         );
 
-        float3 halfSize = (float3)authoring.spawnBounds.size * 0.5f;
-
+        float3 halfSize = (float3)spawnBounds.size * 0.5f;
         float3 localStart = new float3(
             spawnAmount.x > 1 ? -halfSize.x : 0f,
             spawnAmount.y > 1 ? -halfSize.y : 0f,
@@ -63,22 +72,41 @@ public class SpawnShapeAuthoringBaker : Baker<SpawnShapeAuthoring>
         );
 
         float3 localStep = new float3(
-            spawnAmount.x > 1 ? authoring.spawnBounds.size.x / (spawnAmount.x - 1) : 0f,
-            spawnAmount.y > 1 ? authoring.spawnBounds.size.y / (spawnAmount.y - 1) : 0f,
-            spawnAmount.z > 1 ? authoring.spawnBounds.size.z / (spawnAmount.z - 1) : 0f
+            spawnAmount.x > 1 ? spawnBounds.size.x / (spawnAmount.x - 1) : 0f,
+            spawnAmount.y > 1 ? spawnBounds.size.y / (spawnAmount.y - 1) : 0f,
+            spawnAmount.z > 1 ? spawnBounds.size.z / (spawnAmount.z - 1) : 0f
         );
 
-        AddComponent(entity, new SpawnShapeComponent
+        return new SpawnShapeComponent
         {
             SpawnAmount = spawnAmount,
-
-            LocalCenter = authoring.spawnBounds.center,
+            LocalCenter = spawnBounds.center,
             LocalStart = localStart,
             LocalStep = localStep,
-            
-            GlobalPosition = authoring.transform.position
+            GlobalPosition = transform.position,
+            LiquidHydroFactor = liquidHydroFactor,
+            LiquidViscosityFactor = liquidViscosityFactor,
+            ParticleAlbedo = (Vector4)particleAlbedo
+        };
+    }
+}
+
+public class SpawnShapeAuthoringBaker : Baker<SpawnShapeAuthoring>
+{
+    public override void Bake(SpawnShapeAuthoring authoring)
+    {
+        var entity = GetEntity(authoring, TransformUsageFlags.Dynamic);
+        AddComponent(entity, authoring.CreateSpawnShapeComponent());
+        AddComponent(entity, new SpawnShapeAuthoringReference
+        {
+            AuthoringInstanceId = authoring.GetInstanceID()
         });
     }
+}
+
+public struct SpawnShapeAuthoringReference : IComponentData
+{
+    public int AuthoringInstanceId;
 }
 
 public struct SpawnShapeComponent : IComponentData
@@ -90,4 +118,7 @@ public struct SpawnShapeComponent : IComponentData
     public float3 LocalStep;
 
     public float3 GlobalPosition;
+    public float LiquidHydroFactor;
+    public float LiquidViscosityFactor;
+    public float4 ParticleAlbedo;
 }

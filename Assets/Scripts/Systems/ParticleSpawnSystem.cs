@@ -6,26 +6,25 @@ using UnityEngine.Rendering;
 
 partial struct ParticleSpawnSystem : ISystem
 {
-    private float current_game_time;
-    private float last_upadet_time;
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<Config>();
+        Entity spawnStateEntity = state.EntityManager.CreateEntity(typeof(ParticleSpawnState));
+        state.EntityManager.SetComponentData(spawnStateEntity, new ParticleSpawnState
+        {
+            PendingSpawn = true
+        });
     }
 
     public void OnUpdate(ref SystemState state)
     {
-        // current_game_time += SystemAPI.Time.DeltaTime;
-        //
-        // if (current_game_time < last_upadet_time + 1f)
-        // {
-        //     return;
-        // }
-        //
-        // last_upadet_time = current_game_time;
-        
-        state.Enabled = false;
-        
+        RefRW<ParticleSpawnState> spawnState = SystemAPI.GetSingletonRW<ParticleSpawnState>();
+        if (!spawnState.ValueRO.PendingSpawn)
+        {
+            return;
+        }
+
+        spawnState.ValueRW.PendingSpawn = false;
         var config = SystemAPI.GetSingleton<Config>();
 
         foreach (var shape in SystemAPI.Query<RefRO<SpawnShapeComponent>>())
@@ -50,7 +49,17 @@ partial struct ParticleSpawnSystem : ISystem
                         var particleData = state.EntityManager.GetComponentData<ParticleComponent>(particleEntity);
                         particleData.Position = globalPosition;
                         particleData.Volume = shape.ValueRO.LocalStep.x * shape.ValueRO.LocalStep.y * shape.ValueRO.LocalStep.z;
+                        particleData.LiquidHydroFactor = shape.ValueRO.LiquidHydroFactor;
+                        particleData.LiquidViscosityFactor = shape.ValueRO.LiquidViscosityFactor;
                         state.EntityManager.SetComponentData(particleEntity, particleData);
+
+                        if (state.EntityManager.HasComponent<URPMaterialPropertyBaseColor>(particleEntity))
+                        {
+                            state.EntityManager.SetComponentData(particleEntity, new URPMaterialPropertyBaseColor
+                            {
+                                Value = shape.ValueRO.ParticleAlbedo
+                            });
+                        }
                     }
                 }
             }
@@ -60,4 +69,9 @@ partial struct ParticleSpawnSystem : ISystem
     public void OnDestroy(ref SystemState state)
     {
     }
+}
+
+public struct ParticleSpawnState : IComponentData
+{
+    public bool PendingSpawn;
 }

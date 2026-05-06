@@ -4,7 +4,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 
 [BurstCompile]
-partial struct AccumulateGridTilesJob : IJobParallelFor
+partial struct AccumulateGridTilesJob : IJobFor
 {
     [NativeDisableParallelForRestriction]
     public NativeArray<GridCell> GridCells;

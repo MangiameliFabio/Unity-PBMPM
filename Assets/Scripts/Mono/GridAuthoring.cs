@@ -6,7 +6,7 @@ using UnityEngine;
 public class GridAuthoring : MonoBehaviour
 {
     private static readonly Vector3 DefaultBoundsSize = Vector3.one;
-    private const float MinCellSize = 0.01f;
+    public const float MinCellSize = 0.01f;
 
     public Bounds gridBounds = new Bounds(Vector3.zero, DefaultBoundsSize);
     [Min(MinCellSize)] public float cellSize = 5f;
@@ -38,6 +38,11 @@ public class GridAuthoring : MonoBehaviour
         {
             cellSize = MinCellSize;
         }
+    }
+
+    public void ValidateRuntimeValues()
+    {
+        EnsureVisibleBounds();
     }
 
     private void OnDrawGizmos()
@@ -158,42 +163,38 @@ public class GridAuthoring : MonoBehaviour
         int cellCount = Mathf.Max(1, Mathf.CeilToInt(axisSize / cellSize));
         return cellCount * cellSize;
     }
-}
 
-class GridAuthoringBaker : Baker<GridAuthoring>
-{
-    public override void Bake(GridAuthoring authoring)
+    public GridComponent CreateGridComponent()
     {
-        var width = authoring.gridBounds.max.x - authoring.gridBounds.min.x;
-        var height = authoring.gridBounds.max.y - authoring.gridBounds.min.y;
-        var depth = authoring.gridBounds.max.z - authoring.gridBounds.min.z;
-            
-        var entity = GetEntity(authoring, TransformUsageFlags.Dynamic);
-        AddComponent(entity, new GridComponent
+        float width = gridBounds.max.x - gridBounds.min.x;
+        float height = gridBounds.max.y - gridBounds.min.y;
+        float depth = gridBounds.max.z - gridBounds.min.z;
+
+        return new GridComponent
         {
-            GlobalCenter = authoring.gridBounds.center + authoring.transform.position,
-            GlobalStart = authoring.gridBounds.min + authoring.transform.position,
-            
+            GlobalCenter = gridBounds.center + transform.position,
+            GlobalStart = gridBounds.min + transform.position,
             Width = width,
             Height = height,
             Depth = depth,
-            
-            CellSize = authoring.cellSize
-        });
-        var gridCells = AddBuffer<GridCell>(entity);
+            CellSize = cellSize
+        };
+    }
 
-        var cellCountX = Mathf.Max(1, Mathf.RoundToInt(width / authoring.cellSize));
-        var cellCountY = Mathf.Max(1, Mathf.RoundToInt(height / authoring.cellSize));
-        var cellCountZ = Mathf.Max(1, Mathf.RoundToInt(depth / authoring.cellSize));
-        var nodeCountX = cellCountX + 1;
-        var nodeCountY = cellCountY + 1;
-        var nodeCountZ = cellCountZ + 1;
+    public void RebuildGridCells(DynamicBuffer<GridCell> gridCells)
+    {
+        GridComponent grid = CreateGridComponent();
+        int3 cellCounts = GridUtilities.GetCellCounts(grid);
+        int3 nodeCounts = cellCounts + 1;
 
-        for (int x = 0; x < nodeCountX; x++)
+        gridCells.Clear();
+        gridCells.EnsureCapacity(nodeCounts.x * nodeCounts.y * nodeCounts.z);
+
+        for (int x = 0; x < nodeCounts.x; x++)
         {
-            for (int y = 0; y < nodeCountY; y++)
+            for (int y = 0; y < nodeCounts.y; y++)
             {
-                for (int z = 0; z < nodeCountZ; z++)
+                for (int z = 0; z < nodeCounts.z; z++)
                 {
                     gridCells.Add(new GridCell
                     {
@@ -201,7 +202,8 @@ class GridAuthoringBaker : Baker<GridAuthoring>
                         WeightedDisplacement = float3.zero,
                         Displacement = float3.zero,
                         Mass = 0f,
-                        Volume = 0f
+                        Volume = 0f,
+                        LastTouchedIteration = 0
                     });
                 }
             }
@@ -209,6 +211,26 @@ class GridAuthoringBaker : Baker<GridAuthoring>
 
         gridCells.TrimExcess();
     }
+}
+
+class GridAuthoringBaker : Baker<GridAuthoring>
+{
+    public override void Bake(GridAuthoring authoring)
+    {
+        var entity = GetEntity(authoring, TransformUsageFlags.Dynamic);
+        AddComponent(entity, authoring.CreateGridComponent());
+        AddComponent(entity, new GridAuthoringReference
+        {
+            AuthoringInstanceId = authoring.GetInstanceID()
+        });
+        var gridCells = AddBuffer<GridCell>(entity);
+        authoring.RebuildGridCells(gridCells);
+    }
+}
+
+public struct GridAuthoringReference : IComponentData
+{
+    public int AuthoringInstanceId;
 }
 
 public struct GridComponent : IComponentData

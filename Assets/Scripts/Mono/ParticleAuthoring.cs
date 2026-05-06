@@ -1,5 +1,6 @@
 ﻿using Unity.Entities;
 using Unity.Mathematics;
+using Unity.Rendering;
 using UnityEngine;
 
 class ParticleAuthoring : MonoBehaviour
@@ -14,7 +15,7 @@ class ParticleBaker : Baker<ParticleAuthoring>
         AddComponent(entity, new ParticleComponent
         {
             GridCache = Entity.Null,
-            
+
             Velocity = float3.zero,
             Displacement = float3.zero,
             DeformationDisplacement = float3x3.zero,
@@ -22,7 +23,13 @@ class ParticleBaker : Baker<ParticleAuthoring>
             Mass = 1f,
             LiquidDensity = 1f,
             GridMeasuredLiquidDensity = 1f,
-            Volume = 1f
+            Volume = 1f,
+            LiquidHydroFactor = 0.15f,
+            LiquidViscosityFactor = 0.001f,
+        });
+        AddComponent(entity, new URPMaterialPropertyBaseColor
+        {
+            Value = new float4(1f, 1f, 1f, 1f)
         });
     }
 }
@@ -30,7 +37,7 @@ class ParticleBaker : Baker<ParticleAuthoring>
 struct ParticleComponent : IComponentData
 {
     public Entity GridCache;
-    
+
     public float3 Position;
     public float3 Velocity;
     public float3 Displacement;
@@ -40,4 +47,6 @@ struct ParticleComponent : IComponentData
     public float Mass;
     public float LiquidDensity;
     public float GridMeasuredLiquidDensity;
+    public float LiquidHydroFactor;
+    public float LiquidViscosityFactor;
 }

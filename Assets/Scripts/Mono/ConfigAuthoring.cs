@@ -8,8 +8,6 @@ class ConfigAuthoring : MonoBehaviour
     public GridInterpolationMode interpolationMode = GridInterpolationMode.QuadraticBSplineNodes;
     public bool useGridVolumePreservation = true;
     public bool useVisualSmoothing = true;
-    public float liquidHydroFactor = 0.15f;
-    public float liquidViscosityFactor = 0.02f;
 }
 
 class ConfigAuthoringBaker : Baker<ConfigAuthoring>
@@ -24,9 +22,7 @@ class ConfigAuthoringBaker : Baker<ConfigAuthoring>
             IterationCount = Mathf.Max(1, authoring.iterationCount),
             InterpolationMode = authoring.interpolationMode,
             UseGridVolumePreservation = authoring.useGridVolumePreservation,
-            UseVisualSmoothing = authoring.useVisualSmoothing,
-            LiquidHydroFactor = Mathf.Max(0f, authoring.liquidHydroFactor),
-            LiquidViscosityFactor = Mathf.Max(0f, authoring.liquidViscosityFactor)
+            UseVisualSmoothing = authoring.useVisualSmoothing
         });
     }
 }
@@ -40,6 +36,4 @@ public struct Config : IComponentData
     public GridInterpolationMode InterpolationMode;
     public bool UseGridVolumePreservation;
     public bool UseVisualSmoothing;
-    public float LiquidHydroFactor;
-    public float LiquidViscosityFactor;
 }
