@@ -149,7 +149,7 @@ partial struct PBMPMSolverSystem : ISystem
                     gridEntities,
                     interpolationMode,
                     useGridVolumePreservation,
-                    applyParticleGravity: iterationIndex == 0);
+                    applyParticleGravity: iterationIndex == iterationCount - 1);
             }
 
             ScheduleIntegrateParticles(ref state);

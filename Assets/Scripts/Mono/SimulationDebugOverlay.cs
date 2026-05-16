@@ -72,7 +72,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         GridInterpolationMode interpolationMode = GridInterpolationMode.QuadraticBSplineNodes;
         bool useGridVolumePreservation = true;
         bool useVisualSmoothing = true;
-        float updateFrequency = 30f;
+        float updateFrequency = 60f;
         int iterationCount = 1;
         if (TryGetSimulationStats(out SimulationDebugStats stats))
         {
@@ -99,6 +99,7 @@ public class SimulationDebugOverlay : MonoBehaviour
 
         float averageFps = GetAverage(_fpsSamples, _filledSamples);
         float averageIterations = GetAverage(_iterationSamples, _filledSamples);
+        float averageSolverFrequency = averageFps * averageIterations;
         RefreshDebugEntries();
 
         float panelWidth = Mathf.Min(Screen.width - 24f, 460f);
@@ -119,7 +120,8 @@ public class SimulationDebugOverlay : MonoBehaviour
         GUILayout.EndHorizontal();
         GUILayout.Label($"Avg FPS (300f): {averageFps:F1}", _labelStyle);
         GUILayout.Label($"Particles: {particleCount}", _labelStyle);
-        GUILayout.Label($"Avg Solver Iterations: {averageIterations:F2}", _labelStyle);
+        GUILayout.Label($"Avg Solver Iterations per frame: {averageIterations:F2}", _labelStyle);
+        GUILayout.Label($"Solver Frequency: {averageSolverFrequency:F1}/s", _labelStyle);
         GUILayout.Label($"Interpolation: {interpolationMode}", _labelStyle);
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Trilinear", GUILayout.Height(28f)))
@@ -178,9 +180,13 @@ public class SimulationDebugOverlay : MonoBehaviour
         foreach (GridDebugEntry entry in _gridEntries)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(entry.Label, _labelStyle, GUILayout.Width(220f));
+            GUILayout.Label(entry.Label, _labelStyle, GUILayout.Width(190f));
             GUILayout.Label("Cell Size", _labelStyle, GUILayout.Width(70f));
             entry.CellSizeText = GUILayout.TextField(entry.CellSizeText, GUILayout.Width(90f));
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(12f);
+            GUILayout.Label($"Cell Count {entry.CellCountText}", _labelStyle);
             GUILayout.EndHorizontal();
         }
 
@@ -503,11 +509,12 @@ public class SimulationDebugOverlay : MonoBehaviour
             entry.RuntimeEntity = entity;
             entry.Authoring = TryResolveGridAuthoring(entityManager, entity, authoringById);
             entry.Label = entry.Authoring != null ? $"Grid {index + 1}: {entry.Authoring.name}" : $"Grid {index + 1}";
+            GridComponent grid = entityManager.GetComponentData<GridComponent>(entity);
             if (string.IsNullOrWhiteSpace(entry.CellSizeText))
             {
-                GridComponent grid = entityManager.GetComponentData<GridComponent>(entity);
                 entry.CellSizeText = grid.CellSize.ToString("0.###");
             }
+            entry.CellCountText = FormatCellCount(grid);
 
             _gridEntries.Add(entry);
         }
@@ -645,6 +652,7 @@ public class SimulationDebugOverlay : MonoBehaviour
             entry.Authoring.ValidateRuntimeValues();
             entry.Authoring.SnapBoundsToCellSize();
             entry.CellSizeText = entry.Authoring.cellSize.ToString("0.###");
+            entry.CellCountText = FormatCellCount(entry.Authoring.CreateGridComponent());
         }
 
         foreach (SpawnerDebugEntry entry in _spawnerEntries)
@@ -758,6 +766,7 @@ public class SimulationDebugOverlay : MonoBehaviour
             DynamicBuffer<GridCell> gridCells = entityManager.GetBuffer<GridCell>(entry.RuntimeEntity);
             RebuildGridCells(gridCells, grid);
             entry.CellSizeText = grid.CellSize.ToString("0.###");
+            entry.CellCountText = FormatCellCount(grid);
         }
     }
 
@@ -975,6 +984,13 @@ public class SimulationDebugOverlay : MonoBehaviour
         gridCells.TrimExcess();
     }
 
+    private static string FormatCellCount(GridComponent grid)
+    {
+        int3 cellCounts = GridUtilities.GetCellCounts(grid);
+        int totalCellCount = cellCounts.x * cellCounts.y * cellCounts.z;
+        return $"{cellCounts.x} x {cellCounts.y} x {cellCounts.z} ({totalCellCount})";
+    }
+
     private static float GetAverage(float[] values, int count)
     {
         if (count <= 0)
@@ -1018,6 +1034,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         public Entity RuntimeEntity;
         public string Label;
         public string CellSizeText;
+        public string CellCountText;
     }
 
     private class SpawnerDebugEntry

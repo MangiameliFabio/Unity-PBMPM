@@ -42,3 +42,4 @@ struct GridUpdateJob : IJobFor
         GridCells[index] = cell;
     }
 }
+
