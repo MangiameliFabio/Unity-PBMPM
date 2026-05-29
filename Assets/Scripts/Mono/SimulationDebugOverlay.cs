@@ -54,6 +54,11 @@ public class SimulationDebugOverlay : MonoBehaviour
         _filledSamples = Mathf.Min(_filledSamples + 1, SampleCount);
     }
 
+    private void OnDestroy()
+    {
+        ReleaseCachedQueries();
+    }
+
     private void OnGUI()
     {
         EnsureStyles();
@@ -243,16 +248,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return false;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _statsQuery == default)
-        {
-            _cachedWorld = world;
-            _statsQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<SimulationDebugStats>());
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: true);
 
         if (_statsQuery.IsEmptyIgnoreFilter)
         {
@@ -270,16 +271,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return false;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _statsQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<SimulationDebugStats>());
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
 
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -295,15 +292,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return;
         }
         
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
         
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -325,15 +319,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
 
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -356,15 +347,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
 
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -387,16 +375,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _statsQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<SimulationDebugStats>());
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
 
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -418,16 +402,12 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             return;
         }
 
         EntityManager entityManager = world.EntityManager;
-        if (_cachedWorld != world || _configQuery == default)
-        {
-            _cachedWorld = world;
-            _statsQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<SimulationDebugStats>());
-            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
-        }
+        EnsureCachedQueries(world, entityManager, includeStatsQuery: false);
 
         if (_configQuery.IsEmptyIgnoreFilter)
         {
@@ -465,6 +445,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
+            ReleaseCachedQueries();
             entityManager = default;
             return false;
         }
@@ -491,7 +472,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         }
 
         _gridEntries.Clear();
-        EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
+        using EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
         {
             All = new[] { ComponentType.ReadOnly<GridComponent>() },
             None = new[] { ComponentType.ReadOnly<Prefab>() }
@@ -538,7 +519,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         }
 
         _spawnerEntries.Clear();
-        EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
+        using EntityQuery query = entityManager.CreateEntityQuery(new EntityQueryDesc
         {
             All = new[] { ComponentType.ReadOnly<SpawnShapeComponent>() },
             None = new[] { ComponentType.ReadOnly<Prefab>() }
@@ -878,7 +859,7 @@ public class SimulationDebugOverlay : MonoBehaviour
 
     private void DestroyRuntimeParticles(EntityManager entityManager)
     {
-        EntityQuery particleQuery = entityManager.CreateEntityQuery(new EntityQueryDesc
+        using EntityQuery particleQuery = entityManager.CreateEntityQuery(new EntityQueryDesc
         {
             All = new[] { ComponentType.ReadOnly<ParticleComponent>() },
             None = new[] { ComponentType.ReadOnly<Prefab>() }
@@ -889,7 +870,7 @@ public class SimulationDebugOverlay : MonoBehaviour
 
     private void QueueParticleRespawn(EntityManager entityManager)
     {
-        EntityQuery spawnStateQuery = entityManager.CreateEntityQuery(ComponentType.ReadWrite<ParticleSpawnState>());
+        using EntityQuery spawnStateQuery = entityManager.CreateEntityQuery(ComponentType.ReadWrite<ParticleSpawnState>());
         if (spawnStateQuery.IsEmptyIgnoreFilter)
         {
             Entity spawnStateEntity = entityManager.CreateEntity(typeof(ParticleSpawnState));
@@ -903,6 +884,50 @@ public class SimulationDebugOverlay : MonoBehaviour
         ParticleSpawnState spawnState = spawnStateQuery.GetSingleton<ParticleSpawnState>();
         spawnState.PendingSpawn = true;
         entityManager.SetComponentData(spawnStateQuery.GetSingletonEntity(), spawnState);
+    }
+
+    private void EnsureCachedQueries(World world, EntityManager entityManager, bool includeStatsQuery)
+    {
+        if (_cachedWorld != world)
+        {
+            ReleaseCachedQueries();
+            _cachedWorld = world;
+        }
+
+        if (includeStatsQuery && _statsQuery == default)
+        {
+            _statsQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<SimulationDebugStats>());
+        }
+
+        if (_configQuery == default)
+        {
+            _configQuery = entityManager.CreateEntityQuery(ComponentType.ReadOnly<Config>());
+        }
+    }
+
+    private void ReleaseCachedQueries()
+    {
+        bool canDisposeQueries = _cachedWorld != null && _cachedWorld.IsCreated;
+
+        if (_statsQuery != default)
+        {
+            if (canDisposeQueries)
+            {
+                _statsQuery.Dispose();
+            }
+            _statsQuery = default;
+        }
+
+        if (_configQuery != default)
+        {
+            if (canDisposeQueries)
+            {
+                _configQuery.Dispose();
+            }
+            _configQuery = default;
+        }
+
+        _cachedWorld = null;
     }
 
     private void ResetOverlaySamples()

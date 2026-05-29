@@ -12,7 +12,7 @@ partial struct ParticleSpawnSystem : ISystem
         Entity spawnStateEntity = state.EntityManager.CreateEntity(typeof(ParticleSpawnState));
         state.EntityManager.SetComponentData(spawnStateEntity, new ParticleSpawnState
         {
-            PendingSpawn = true
+            PendingSpawn = false
         });
     }
 
