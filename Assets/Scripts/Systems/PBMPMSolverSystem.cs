@@ -1,11 +1,11 @@
 using Unity.Burst;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Physics.Extensions;
+using Unity.Profiling;
 
 partial struct PBMPMSolverSystem : ISystem
 {
@@ -69,17 +69,63 @@ partial struct PBMPMSolverSystem : ISystem
         _gridLookup.Update(ref state);
         _gridCellsLookupRW.Update(ref state);
         _gridCellsLookupRO.Update(ref state);
-        RebuildColliderCache(ref state);
-        ScheduleParticleJobs(ref state, iterationCount, interpolationMode, useGridVolumePreservation);
+
+        bool solverRan = _solverSubsteps > 0;
+        double solverUpdateTimeMs = 0d;
+        if (solverRan)
+        {
+            for (int substepIndex = 0; substepIndex < _solverSubsteps; substepIndex++)
+            {
+                ProfilerMarker.AutoScope solverUpdateScope = default;
+                long startTimestamp = PerformanceUtilities.BeginSolverUpdateMeasurement(out solverUpdateScope);
+                using (solverUpdateScope)
+                {
+                    PBMPMSolverUpdate(ref state, iterationCount, interpolationMode, useGridVolumePreservation);
+                }
+
+                solverUpdateTimeMs = PerformanceUtilities.EndSolverUpdateMeasurement(startTimestamp);
+            }
+        }
+
+        ScheduleSmoothing(ref state);
+
+        int particleCount = _particleQuery.CalculateEntityCount();
+        SimulationMemoryStats memoryStats = MemoryUtilities.BuildMemoryStats(
+            _gridQuery,
+            _gridLookup,
+            _gridCellsLookupRO,
+            particleCount,
+            _tileParticlesCache.Capacity,
+            _activeTileSetCache.Capacity,
+            _activeTilesCache.Capacity);
 
         state.EntityManager.SetComponentData(_debugStatsEntity, new SimulationDebugStats
         {
-            ParticleCount = _particleQuery.CalculateEntityCount(),
-            SolverIterations = _solverSubsteps * iterationCount
+            ParticleCount = particleCount,
+            SolverIterations = _solverSubsteps * iterationCount,
+            SolverSubsteps = _solverSubsteps
         });
-        UpdateMemoryStats(ref state);
+        state.EntityManager.SetComponentData(_debugStatsEntity, memoryStats);
+        PBMPMProfilerCaptureStats.SampleFrame(
+            particleCount,
+            memoryStats.GridCellCount,
+            _config.UpdateFrequency,
+            iterationCount,
+            SystemAPI.Time.DeltaTime,
+            solverRan,
+            solverUpdateTimeMs);
 
         _lastTime = _currentTime;
+    }
+
+    private void PBMPMSolverUpdate(
+        ref SystemState state,
+        int iterationCount,
+        GridInterpolationMode interpolationMode,
+        bool useGridVolumePreservation)
+    {
+        RebuildColliderCache(ref state);
+        ScheduleParticleJobs(ref state, iterationCount, interpolationMode, useGridVolumePreservation);
     }
 
     public void OnDestroy(ref SystemState state)
@@ -140,24 +186,19 @@ partial struct PBMPMSolverSystem : ISystem
     private void ScheduleParticleJobs(ref SystemState state, int iterationCount, GridInterpolationMode interpolationMode, bool useGridVolumePreservation)
     {
         var gridEntities = _gridQuery.ToEntityArray(Allocator.TempJob);
-
-        for (int substepIndex = 0; substepIndex < _solverSubsteps; substepIndex++)
-        {
-            for (int iterationIndex = 0; iterationIndex < iterationCount; iterationIndex++)
-            {
-                _gridIterationId++;
-                RunSolverIteration(
-                    ref state,
-                    gridEntities,
-                    interpolationMode,
-                    useGridVolumePreservation,
-                    applyParticleGravity: iterationIndex == iterationCount - 1);
-            }
-
-            ScheduleIntegrateParticles(ref state);
-        }
         
-        ScheduleSmoothing(ref state);
+        for (int iterationIndex = 0; iterationIndex < iterationCount; iterationIndex++)
+        {
+            _gridIterationId++;
+            RunSolverIteration(
+                ref state,
+                gridEntities,
+                interpolationMode,
+                useGridVolumePreservation,
+                applyParticleGravity: iterationIndex == iterationCount - 1);
+        }
+
+        ScheduleIntegrateParticles(ref state);
 
         state.Dependency = gridEntities.Dispose(state.Dependency);
     }
@@ -222,13 +263,20 @@ partial struct PBMPMSolverSystem : ISystem
         foreach (var gridEntity in gridEntities)
         {
             GridComponent grid = _gridLookup[gridEntity];
-            maxActiveTileCapacity = math.max(maxActiveTileCapacity, GetActiveTileCapacity(grid));
+            maxActiveTileCapacity = math.max(
+                maxActiveTileCapacity,
+                MemoryUtilities.GetActiveTileCapacity(grid, GridTileSize));
         }
 
         _tileParticlesCache.Clear();
         _activeTileSetCache.Clear();
         _activeTilesCache.Clear();
-        UpdateParticleToGridCacheCapacity(tileParticleCapacity, maxActiveTileCapacity);
+        MemoryUtilities.UpdateParticleToGridCacheCapacity(
+            ref _tileParticlesCache,
+            ref _activeTileSetCache,
+            ref _activeTilesCache,
+            tileParticleCapacity,
+            maxActiveTileCapacity);
 
         foreach (var gridEntity in gridEntities)
         {
@@ -252,7 +300,7 @@ partial struct PBMPMSolverSystem : ISystem
             state.Dependency = particleToGridTileJob.ScheduleParallel(state.Dependency);
             state.Dependency.Complete();
 
-            CollectActiveTiles();
+            MemoryUtilities.CollectActiveTiles(_activeTileSetCache, ref _activeTilesCache);
             if (_activeTilesCache.Length > 0)
             {
                 NativeArray<GridCell> gridCells = _gridCellsLookupRW[gridEntity].AsNativeArray();
@@ -271,171 +319,6 @@ partial struct PBMPMSolverSystem : ISystem
                 state.Dependency.Complete();
             }
         }
-    }
-
-    private int GetActiveTileCapacity(GridComponent grid)
-    {
-        int3 nodeCounts = GridUtilities.GetNodeCounts(grid);
-        int3 tileCounts = GridUtilities.GetTileCounts(nodeCounts, GridTileSize);
-        return math.max(1, tileCounts.x * tileCounts.y * tileCounts.z);
-    }
-
-    private void UpdateParticleToGridCacheCapacity(int tileParticleCapacity, int activeTileCapacity)
-    {
-        ResizeCacheCapacity(ref _tileParticlesCache, math.max(1, tileParticleCapacity));
-        ResizeCacheCapacity(ref _activeTileSetCache, math.max(1, activeTileCapacity));
-        ResizeCacheCapacity(ref _activeTilesCache, math.max(1, activeTileCapacity));
-    }
-
-    private static void ResizeCacheCapacity(ref NativeParallelMultiHashMap<int, GridTileParticleRecord> container, int requiredCapacity)
-    {
-        int currentCapacity = container.Capacity;
-        if (currentCapacity < requiredCapacity)
-        {
-            container.Capacity = requiredCapacity;
-            return;
-        }
-
-        if (ShouldShrinkCacheCapacity(currentCapacity, requiredCapacity))
-        {
-            container.Dispose();
-            container = new NativeParallelMultiHashMap<int, GridTileParticleRecord>(requiredCapacity, Allocator.Persistent);
-        }
-    }
-
-    private static void ResizeCacheCapacity(ref NativeParallelHashSet<int> container, int requiredCapacity)
-    {
-        int currentCapacity = container.Capacity;
-        if (currentCapacity < requiredCapacity)
-        {
-            container.Capacity = requiredCapacity;
-            return;
-        }
-
-        if (ShouldShrinkCacheCapacity(currentCapacity, requiredCapacity))
-        {
-            container.Dispose();
-            container = new NativeParallelHashSet<int>(requiredCapacity, Allocator.Persistent);
-        }
-    }
-
-    private static void ResizeCacheCapacity(ref NativeList<int> container, int requiredCapacity)
-    {
-        int currentCapacity = container.Capacity;
-        if (currentCapacity < requiredCapacity || ShouldShrinkCacheCapacity(currentCapacity, requiredCapacity))
-        {
-            container.Capacity = requiredCapacity;
-        }
-    }
-
-    private static bool ShouldShrinkCacheCapacity(int currentCapacity, int requiredCapacity)
-    {
-        return currentCapacity > math.max(requiredCapacity * 2, 256);
-    }
-
-    private void CollectActiveTiles()
-    {
-        var activeTileEnumerator = _activeTileSetCache.GetEnumerator();
-        while (activeTileEnumerator.MoveNext())
-        {
-            _activeTilesCache.AddNoResize(activeTileEnumerator.Current);
-        }
-    }
-
-    private void UpdateMemoryStats(ref SystemState state)
-    {
-        int particleCount = _particleQuery.CalculateEntityCount();
-        int gridCount = 0;
-        int totalGridCellCount = 0;
-        int totalGridNodeCount = 0;
-
-        foreach (var (grid, gridCells) in SystemAPI.Query<RefRO<GridComponent>, DynamicBuffer<GridCell>>())
-        {
-            gridCount++;
-            int3 cellCounts = GridUtilities.GetCellCounts(grid.ValueRO);
-            totalGridCellCount += cellCounts.x * cellCounts.y * cellCounts.z;
-            totalGridNodeCount += gridCells.Length;
-        }
-
-        long particleComponentBytes = (long)particleCount * UnsafeUtility.SizeOf<ParticleComponent>();
-        long particleTransformBytes = (long)particleCount * UnsafeUtility.SizeOf<Unity.Transforms.LocalTransform>();
-        long gridComponentBytes = (long)gridCount * UnsafeUtility.SizeOf<GridComponent>();
-        long gridNodeBytes = (long)totalGridNodeCount * UnsafeUtility.SizeOf<GridCell>();
-        long tileParticleCacheBytes = EstimateParallelMultiHashMapBytes(
-            _tileParticlesCache.Capacity,
-            UnsafeUtility.SizeOf<GridTileParticleRecord>());
-        long activeTileSetBytes = EstimateParallelHashSetBytes(
-            _activeTileSetCache.Capacity,
-            UnsafeUtility.SizeOf<int>());
-        long activeTileListBytes = AlignTo64((long)_activeTilesCache.Capacity * UnsafeUtility.SizeOf<int>());
-        long totalEstimatedSolverBytes = particleComponentBytes
-            + gridComponentBytes
-            + gridNodeBytes
-            + tileParticleCacheBytes
-            + activeTileSetBytes
-            + activeTileListBytes;
-
-        state.EntityManager.SetComponentData(_debugStatsEntity, new SimulationMemoryStats
-        {
-            ParticleCount = particleCount,
-            GridCount = gridCount,
-            GridCellCount = totalGridCellCount,
-            GridNodeCount = totalGridNodeCount,
-            TileParticleCacheCapacity = _tileParticlesCache.Capacity,
-            ActiveTileCapacity = _activeTileSetCache.Capacity,
-            ParticleComponentBytes = particleComponentBytes,
-            ParticleTransformBytes = particleTransformBytes,
-            GridComponentBytes = gridComponentBytes,
-            GridNodeBytes = gridNodeBytes,
-            TileParticleCacheBytes = tileParticleCacheBytes,
-            ActiveTileSetBytes = activeTileSetBytes,
-            ActiveTileListBytes = activeTileListBytes,
-            TotalEstimatedSolverBytes = totalEstimatedSolverBytes,
-            TotalEstimatedRuntimeBytes = totalEstimatedSolverBytes + particleTransformBytes
-        });
-    }
-
-    private static long EstimateParallelMultiHashMapBytes(int capacity, int valueSize)
-    {
-        if (capacity <= 0)
-        {
-            return 0;
-        }
-
-        int bucketCount = CeilPow2(math.max(1, capacity * 2));
-        return AlignTo64((long)valueSize * capacity)
-            + AlignTo64(4L * capacity)
-            + AlignTo64(4L * capacity)
-            + AlignTo64(4L * bucketCount);
-    }
-
-    private static long EstimateParallelHashSetBytes(int capacity, int keySize)
-    {
-        if (capacity <= 0)
-        {
-            return 0;
-        }
-
-        int bucketCount = CeilPow2(math.max(1, capacity * 2));
-        return AlignTo64((long)keySize * capacity)
-            + AlignTo64(4L * capacity)
-            + AlignTo64(4L * bucketCount);
-    }
-
-    private static int CeilPow2(int value)
-    {
-        int result = 1;
-        while (result < value)
-        {
-            result <<= 1;
-        }
-
-        return result;
-    }
-
-    private static long AlignTo64(long value)
-    {
-        return (value + 63L) & ~63L;
     }
 
     [BurstCompile]

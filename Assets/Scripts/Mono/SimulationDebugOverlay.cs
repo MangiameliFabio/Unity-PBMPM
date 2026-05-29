@@ -7,15 +7,39 @@ using UnityEngine;
 public class SimulationDebugOverlay : MonoBehaviour
 {
     private const int SampleCount = 300;
+    private const int PipelineSolverStepsBetweenLogs = 200;
+    private const int PipelineSolverStepsBeforeFirstLog = 250;
     private readonly float[] _fpsSamples = new float[SampleCount];
     private readonly float[] _iterationSamples = new float[SampleCount];
 
     private int _sampleIndex;
     private int _filledSamples;
+    private int _currentSolverSubsteps;
     private bool _isVisible = true;
     private Vector2 _scrollPosition;
     private string _updateFrequencyText;
     private string _iterationCountText;
+    private string _solverRunTimeMinText;
+    private string _solverRunTimeMaxText;
+    private string _solverRunTimeMeanText;
+    private string _solverRunTimeSampleCountText;
+    private string _solverRunTimeStatusText;
+    private string _logRepeatCountText;
+    private string _pipelineStartSpawnAmountText;
+    private string _pipelineEndSpawnAmountText;
+    private string _pipelineStatusText;
+    private string _frequencyPipelineStartText;
+    private string _frequencyPipelineEndText;
+    private string _frequencyPipelineStepText;
+    private string _frequencyPipelineStatusText;
+    private string _iterationPipelineStartText;
+    private string _iterationPipelineEndText;
+    private string _iterationPipelineStepText;
+    private string _iterationPipelineStatusText;
+    private string _cellSizePipelineStartText;
+    private string _cellSizePipelineEndText;
+    private string _cellSizePipelineStepText;
+    private string _cellSizePipelineStatusText;
     private GUIStyle _labelStyle;
     private GUIStyle _boxStyle;
     private EntityQuery _statsQuery;
@@ -23,6 +47,27 @@ public class SimulationDebugOverlay : MonoBehaviour
     private World _cachedWorld;
     private readonly List<GridDebugEntry> _gridEntries = new List<GridDebugEntry>();
     private readonly List<SpawnerDebugEntry> _spawnerEntries = new List<SpawnerDebugEntry>();
+    private const float PipelineWaitBeforeLoggingSeconds = 10f;
+    private int _pendingScheduledLogCount;
+    private bool _isScheduledLoggingActive;
+    private int _scheduledLogAccumulatedSolverSubsteps;
+    private bool _isPipelineActive;
+    private PipelineStage _pipelineStage;
+    private PipelineKind _pipelineKind;
+    private int _pipelineCurrentSpawnAmount;
+    private int _pipelineEndSpawnAmount;
+    private float _pipelineNextActionTime;
+    private float _frequencyPipelineCurrentValue;
+    private float _frequencyPipelineEndValue;
+    private float _frequencyPipelineStepValue;
+    private int _iterationPipelineCurrentValue;
+    private int _iterationPipelineEndValue;
+    private int _iterationPipelineStepValue;
+    private float _cellSizePipelineCurrentValue;
+    private float _cellSizePipelineEndValue;
+    private float _cellSizePipelineStepValue;
+    private int _pipelineRemainingLogs;
+    private int _pipelineAccumulatedSolverSubsteps;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateOverlay()
@@ -37,6 +82,27 @@ public class SimulationDebugOverlay : MonoBehaviour
         overlayObject.AddComponent<SimulationDebugOverlay>();
     }
 
+    private void Awake()
+    {
+        ResetSolverRunTimeDisplay();
+        _logRepeatCountText = "1";
+        _pipelineStartSpawnAmountText = "15";
+        _pipelineEndSpawnAmountText = "40";
+        _frequencyPipelineStartText = "15";
+        _frequencyPipelineEndText = "40";
+        _frequencyPipelineStepText = "1";
+        _iterationPipelineStartText = "1";
+        _iterationPipelineEndText = "10";
+        _iterationPipelineStepText = "1";
+        _cellSizePipelineStartText = "0.1";
+        _cellSizePipelineEndText = "1";
+        _cellSizePipelineStepText = "0.1";
+        _pipelineStatusText = "Pipeline idle.";
+        _frequencyPipelineStatusText = "Pipeline idle.";
+        _iterationPipelineStatusText = "Pipeline idle.";
+        _cellSizePipelineStatusText = "Pipeline idle.";
+    }
+
     private void Update()
     {
         float deltaTime = Time.unscaledDeltaTime;
@@ -47,11 +113,19 @@ public class SimulationDebugOverlay : MonoBehaviour
         if (TryGetSimulationStats(out SimulationDebugStats stats))
         {
             solverIterations = stats.SolverIterations;
+            _currentSolverSubsteps = stats.SolverSubsteps;
+        }
+        else
+        {
+            _currentSolverSubsteps = 0;
         }
 
         _iterationSamples[_sampleIndex] = solverIterations;
         _sampleIndex = (_sampleIndex + 1) % SampleCount;
         _filledSamples = Mathf.Min(_filledSamples + 1, SampleCount);
+
+        UpdateScheduledStatLogging();
+        UpdateSpawnerSweepPipeline();
     }
 
     private void OnDestroy()
@@ -181,6 +255,116 @@ public class SimulationDebugOverlay : MonoBehaviour
         }
 
         GUILayout.Space(8f);
+        GUILayout.Label($"Solver Runtime ({PBMPMProfilerCaptureStats.SolverRunSampleWindow} running frames)", _labelStyle);
+        GUILayout.Label($"Min: {_solverRunTimeMinText}", _labelStyle);
+        GUILayout.Label($"Max: {_solverRunTimeMaxText}", _labelStyle);
+        GUILayout.Label($"Mean: {_solverRunTimeMeanText}", _labelStyle);
+        GUILayout.Label(_solverRunTimeSampleCountText, _labelStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Logs", _labelStyle, GUILayout.Width(40f));
+        _logRepeatCountText = GUILayout.TextField(_logRepeatCountText, GUILayout.Width(45f));
+        GUILayout.EndHorizontal();
+        GUILayout.Label($"Manual logging: first log now, then every {PipelineSolverStepsBetweenLogs} solver steps", _labelStyle);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Update Runtime Stats", GUILayout.Height(28f)))
+        {
+            RefreshSolverRunTimeDisplay();
+        }
+
+        if (GUILayout.Button("Log Stats", GUILayout.Height(28f)))
+        {
+            StartScheduledSolverRunTimeLogging();
+        }
+        GUILayout.EndHorizontal();
+        if (_pendingScheduledLogCount > 0 && GUILayout.Button("Cancel Scheduled Logs", GUILayout.Height(24f)))
+        {
+            CancelScheduledSolverRunTimeLogging("Scheduled logging canceled.");
+        }
+        GUILayout.Label(_solverRunTimeStatusText, _labelStyle);
+
+        GUILayout.Space(8f);
+        GUILayout.Label("Particle Logging Pipeline", _labelStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Start", _labelStyle, GUILayout.Width(40f));
+        _pipelineStartSpawnAmountText = GUILayout.TextField(_pipelineStartSpawnAmountText, GUILayout.Width(45f));
+        GUILayout.Label("End", _labelStyle, GUILayout.Width(30f));
+        _pipelineEndSpawnAmountText = GUILayout.TextField(_pipelineEndSpawnAmountText, GUILayout.Width(45f));
+        GUILayout.EndHorizontal();
+        if (GUILayout.Button("Run Particle Logging Pipeline", GUILayout.Height(28f)))
+        {
+            StartSpawnerSweepPipeline();
+        }
+        if (_isPipelineActive && _pipelineKind == PipelineKind.ParticleLogging &&
+            GUILayout.Button("Cancel Particle Logging Pipeline", GUILayout.Height(24f)))
+        {
+            CancelSpawnerSweepPipeline("Particle logging pipeline canceled.");
+        }
+        GUILayout.Label(_pipelineStatusText, _labelStyle);
+
+        GUILayout.Space(8f);
+        GUILayout.Label("Frequency Logging Pipeline", _labelStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Start", _labelStyle, GUILayout.Width(40f));
+        _frequencyPipelineStartText = GUILayout.TextField(_frequencyPipelineStartText, GUILayout.Width(45f));
+        GUILayout.Label("End", _labelStyle, GUILayout.Width(30f));
+        _frequencyPipelineEndText = GUILayout.TextField(_frequencyPipelineEndText, GUILayout.Width(45f));
+        GUILayout.Label("Step", _labelStyle, GUILayout.Width(35f));
+        _frequencyPipelineStepText = GUILayout.TextField(_frequencyPipelineStepText, GUILayout.Width(45f));
+        GUILayout.EndHorizontal();
+        if (GUILayout.Button("Run Frequency Logging Pipeline", GUILayout.Height(28f)))
+        {
+            StartFrequencyLoggingPipeline();
+        }
+        if (_isPipelineActive && _pipelineKind == PipelineKind.FrequencyLogging &&
+            GUILayout.Button("Cancel Frequency Logging Pipeline", GUILayout.Height(24f)))
+        {
+            CancelSpawnerSweepPipeline("Frequency logging pipeline canceled.");
+        }
+        GUILayout.Label(_frequencyPipelineStatusText, _labelStyle);
+
+        GUILayout.Space(8f);
+        GUILayout.Label("Iteration Logging Pipeline", _labelStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Start", _labelStyle, GUILayout.Width(40f));
+        _iterationPipelineStartText = GUILayout.TextField(_iterationPipelineStartText, GUILayout.Width(45f));
+        GUILayout.Label("End", _labelStyle, GUILayout.Width(30f));
+        _iterationPipelineEndText = GUILayout.TextField(_iterationPipelineEndText, GUILayout.Width(45f));
+        GUILayout.Label("Step", _labelStyle, GUILayout.Width(35f));
+        _iterationPipelineStepText = GUILayout.TextField(_iterationPipelineStepText, GUILayout.Width(45f));
+        GUILayout.EndHorizontal();
+        if (GUILayout.Button("Run Iteration Logging Pipeline", GUILayout.Height(28f)))
+        {
+            StartIterationLoggingPipeline();
+        }
+        if (_isPipelineActive && _pipelineKind == PipelineKind.IterationLogging &&
+            GUILayout.Button("Cancel Iteration Logging Pipeline", GUILayout.Height(24f)))
+        {
+            CancelSpawnerSweepPipeline("Iteration logging pipeline canceled.");
+        }
+        GUILayout.Label(_iterationPipelineStatusText, _labelStyle);
+
+        GUILayout.Space(8f);
+        GUILayout.Label("Cell Size Logging Pipeline", _labelStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Start", _labelStyle, GUILayout.Width(40f));
+        _cellSizePipelineStartText = GUILayout.TextField(_cellSizePipelineStartText, GUILayout.Width(45f));
+        GUILayout.Label("End", _labelStyle, GUILayout.Width(30f));
+        _cellSizePipelineEndText = GUILayout.TextField(_cellSizePipelineEndText, GUILayout.Width(45f));
+        GUILayout.Label("Step", _labelStyle, GUILayout.Width(35f));
+        _cellSizePipelineStepText = GUILayout.TextField(_cellSizePipelineStepText, GUILayout.Width(45f));
+        GUILayout.EndHorizontal();
+        if (GUILayout.Button("Run Cell Size Logging Pipeline", GUILayout.Height(28f)))
+        {
+            StartCellSizeLoggingPipeline();
+        }
+        if (_isPipelineActive && _pipelineKind == PipelineKind.CellSizeLogging &&
+            GUILayout.Button("Cancel Cell Size Logging Pipeline", GUILayout.Height(24f)))
+        {
+            CancelSpawnerSweepPipeline("Cell size logging pipeline canceled.");
+        }
+        GUILayout.Label(_cellSizePipelineStatusText, _labelStyle);
+
+        GUILayout.Space(8f);
         GUILayout.Label("Grids", _labelStyle);
         foreach (GridDebugEntry entry in _gridEntries)
         {
@@ -207,6 +391,8 @@ public class SimulationDebugOverlay : MonoBehaviour
             entry.SpawnAmountYText = GUILayout.TextField(entry.SpawnAmountYText, GUILayout.Width(55f));
             GUILayout.Label("Z", _labelStyle, GUILayout.Width(18f));
             entry.SpawnAmountZText = GUILayout.TextField(entry.SpawnAmountZText, GUILayout.Width(55f));
+            GUILayout.Label("All", _labelStyle, GUILayout.Width(24f));
+            entry.SpawnAmountAllText = GUILayout.TextField(entry.SpawnAmountAllText, GUILayout.Width(55f));
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
             GUILayout.Label("Extent X", _labelStyle, GUILayout.Width(70f));
@@ -553,6 +739,11 @@ public class SimulationDebugOverlay : MonoBehaviour
                 entry.SpawnAmountZText = shape.SpawnAmount.z.ToString();
             }
 
+            if (entry.SpawnAmountAllText == null)
+            {
+                entry.SpawnAmountAllText = GetSharedSpawnAmountText(shape.SpawnAmount);
+            }
+
             float3 extents = GetSpawnExtents(shape);
             if (string.IsNullOrWhiteSpace(entry.ExtentXText))
             {
@@ -600,6 +791,11 @@ public class SimulationDebugOverlay : MonoBehaviour
 
     private void ResetScene()
     {
+        ResetScene(cancelAutomation: true);
+    }
+
+    private void ResetScene(bool cancelAutomation)
+    {
         World world = World.DefaultGameObjectInjectionWorld;
         if (world == null || !world.IsCreated)
         {
@@ -614,6 +810,13 @@ public class SimulationDebugOverlay : MonoBehaviour
         DestroyRuntimeParticles(entityManager);
         QueueParticleRespawn(entityManager);
         ResetOverlaySamples();
+        PBMPMProfilerCaptureStats.ResetRuntimeStats();
+        CancelScheduledSolverRunTimeLogging(null);
+        if (cancelAutomation)
+        {
+            CancelSpawnerSweepPipeline(null);
+        }
+        ResetSolverRunTimeDisplay("Solver runtime samples reset.");
     }
 
     private void ApplyPendingValuesToAuthoring()
@@ -656,6 +859,13 @@ public class SimulationDebugOverlay : MonoBehaviour
             if (int.TryParse(entry.SpawnAmountZText, out int parsedZ))
             {
                 entry.Authoring.spawnAmountZ = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedZ);
+            }
+
+            if (TryGetSharedSpawnAmount(entry.SpawnAmountAllText, out int parsedAll))
+            {
+                entry.Authoring.spawnAmountX = parsedAll;
+                entry.Authoring.spawnAmountY = parsedAll;
+                entry.Authoring.spawnAmountZ = parsedAll;
             }
 
             Vector3 extents = entry.Authoring.spawnBounds.extents;
@@ -703,9 +913,11 @@ public class SimulationDebugOverlay : MonoBehaviour
             entry.Authoring.particleAlbedo = particleAlbedo;
             entry.Authoring.spawnBounds = new Bounds(entry.Authoring.spawnBounds.center, extents * 2f);
             entry.Authoring.ValidateRuntimeValues();
-            entry.SpawnAmountXText = entry.Authoring.spawnAmountX.ToString();
-            entry.SpawnAmountYText = entry.Authoring.spawnAmountY.ToString();
-            entry.SpawnAmountZText = entry.Authoring.spawnAmountZ.ToString();
+            int3 authoringSpawnAmount = new int3(
+                entry.Authoring.spawnAmountX,
+                entry.Authoring.spawnAmountY,
+                entry.Authoring.spawnAmountZ);
+            UpdateSpawnAmountTexts(entry, authoringSpawnAmount);
             entry.ExtentXText = entry.Authoring.spawnBounds.extents.x.ToString("0.###");
             entry.ExtentYText = entry.Authoring.spawnBounds.extents.y.ToString("0.###");
             entry.ExtentZText = entry.Authoring.spawnBounds.extents.z.ToString("0.###");
@@ -786,6 +998,11 @@ public class SimulationDebugOverlay : MonoBehaviour
                     spawnAmount.z = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedZ);
                 }
 
+                if (TryGetSharedSpawnAmount(entry.SpawnAmountAllText, out int parsedAll))
+                {
+                    spawnAmount = new int3(parsedAll, parsedAll, parsedAll);
+                }
+
                 float3 extents = GetSpawnExtents(shape);
                 if (float.TryParse(entry.ExtentXText, out float parsedExtentX))
                 {
@@ -843,9 +1060,7 @@ public class SimulationDebugOverlay : MonoBehaviour
 
             entityManager.SetComponentData(entry.RuntimeEntity, shape);
             float3 normalizedExtents = GetSpawnExtents(shape);
-            entry.SpawnAmountXText = shape.SpawnAmount.x.ToString();
-            entry.SpawnAmountYText = shape.SpawnAmount.y.ToString();
-            entry.SpawnAmountZText = shape.SpawnAmount.z.ToString();
+            UpdateSpawnAmountTexts(entry, shape.SpawnAmount);
             entry.ExtentXText = normalizedExtents.x.ToString("0.###");
             entry.ExtentYText = normalizedExtents.y.ToString("0.###");
             entry.ExtentZText = normalizedExtents.z.ToString("0.###");
@@ -942,6 +1157,605 @@ public class SimulationDebugOverlay : MonoBehaviour
         _filledSamples = 0;
     }
 
+    private void RefreshSolverRunTimeDisplay()
+    {
+        PBMPMProfilerCaptureStats.SolverRunTimeSnapshot snapshot = PBMPMProfilerCaptureStats.CaptureSolverRunTimeSnapshot();
+        if (!snapshot.HasSamples)
+        {
+            ResetSolverRunTimeDisplay("No solver runtime samples recorded yet.");
+            return;
+        }
+
+        _solverRunTimeMinText = FormatDurationMs(snapshot.MinMs);
+        _solverRunTimeMaxText = FormatDurationMs(snapshot.MaxMs);
+        _solverRunTimeMeanText = FormatDurationMs(snapshot.MeanMs);
+        _solverRunTimeSampleCountText =
+            $"Samples: {snapshot.SampleCount} / {PBMPMProfilerCaptureStats.SolverRunSampleWindow}";
+        _solverRunTimeStatusText = $"CSV: {PBMPMProfilerCaptureStats.RuntimeCsvRelativePath}";
+    }
+
+    private void StartScheduledSolverRunTimeLogging()
+    {
+        if (!int.TryParse(_logRepeatCountText, out int requestedLogCount))
+        {
+            _solverRunTimeStatusText = "Log count must be a whole number.";
+            return;
+        }
+
+        requestedLogCount = Mathf.Max(1, requestedLogCount);
+        _logRepeatCountText = requestedLogCount.ToString();
+
+        if (!TryLogSolverRunTimeStats())
+        {
+            _isScheduledLoggingActive = false;
+            return;
+        }
+
+        _pendingScheduledLogCount = requestedLogCount - 1;
+        _scheduledLogAccumulatedSolverSubsteps = 0;
+        _isScheduledLoggingActive = _pendingScheduledLogCount > 0;
+
+        if (_pendingScheduledLogCount > 0)
+        {
+            _solverRunTimeStatusText =
+                $"Logged 1/{requestedLogCount}. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+            return;
+        }
+
+        _solverRunTimeStatusText = "Logged 1/1.";
+    }
+
+    private void UpdateScheduledStatLogging()
+    {
+        if (_pendingScheduledLogCount <= 0)
+        {
+            return;
+        }
+
+        _scheduledLogAccumulatedSolverSubsteps += _currentSolverSubsteps;
+        if (_scheduledLogAccumulatedSolverSubsteps < PipelineSolverStepsBetweenLogs)
+        {
+            return;
+        }
+
+        _scheduledLogAccumulatedSolverSubsteps = 0;
+
+        if (!TryLogSolverRunTimeStats())
+        {
+            CancelScheduledSolverRunTimeLogging(null);
+            return;
+        }
+
+        _pendingScheduledLogCount--;
+        if (_pendingScheduledLogCount > 0)
+        {
+            _solverRunTimeStatusText =
+                $"Scheduled logs remaining: {_pendingScheduledLogCount}. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+            return;
+        }
+
+        _isScheduledLoggingActive = false;
+        _solverRunTimeStatusText = "Scheduled logging complete.";
+    }
+
+    private bool TryLogSolverRunTimeStats()
+    {
+        RefreshSolverRunTimeDisplay();
+
+        if (PBMPMProfilerCaptureStats.TryAppendCsvEntry(out _, out string errorMessage))
+        {
+            return true;
+        }
+
+        _solverRunTimeStatusText = errorMessage;
+        return false;
+    }
+
+    private void CancelScheduledSolverRunTimeLogging(string statusText)
+    {
+        _pendingScheduledLogCount = 0;
+        _scheduledLogAccumulatedSolverSubsteps = 0;
+        _isScheduledLoggingActive = false;
+        if (!string.IsNullOrWhiteSpace(statusText))
+        {
+            _solverRunTimeStatusText = statusText;
+        }
+    }
+
+    private void StartSpawnerSweepPipeline()
+    {
+        if (!int.TryParse(_pipelineStartSpawnAmountText, out int startSpawnAmount))
+        {
+            _pipelineStatusText = "Particle pipeline start amount must be a whole number.";
+            return;
+        }
+
+        if (!int.TryParse(_pipelineEndSpawnAmountText, out int endSpawnAmount))
+        {
+            _pipelineStatusText = "Particle pipeline end amount must be a whole number.";
+            return;
+        }
+
+        startSpawnAmount = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, startSpawnAmount);
+        endSpawnAmount = Mathf.Max(startSpawnAmount, endSpawnAmount);
+        _pipelineStartSpawnAmountText = startSpawnAmount.ToString();
+        _pipelineEndSpawnAmountText = endSpawnAmount.ToString();
+
+        CancelSpawnerSweepPipeline(null);
+        CancelScheduledSolverRunTimeLogging(null);
+        _isPipelineActive = true;
+        _pipelineKind = PipelineKind.ParticleLogging;
+        _pipelineCurrentSpawnAmount = startSpawnAmount;
+        _pipelineEndSpawnAmount = endSpawnAmount;
+        _pipelineRemainingLogs = 0;
+        _pipelineAccumulatedSolverSubsteps = 0;
+
+        ApplySpawnerSweepSpawnAmount(_pipelineCurrentSpawnAmount);
+        _pipelineStage = PipelineStage.WaitingBeforeLogging;
+        _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+        _pipelineStatusText =
+            $"Particle logging pipeline running: spawn amount {_pipelineCurrentSpawnAmount}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+        _frequencyPipelineStatusText = "Pipeline idle.";
+        _iterationPipelineStatusText = "Pipeline idle.";
+        _cellSizePipelineStatusText = "Pipeline idle.";
+    }
+
+    private void StartFrequencyLoggingPipeline()
+    {
+        if (!float.TryParse(_frequencyPipelineStartText, out float startFrequency))
+        {
+            _frequencyPipelineStatusText = "Frequency pipeline start must be a number.";
+            return;
+        }
+
+        if (!float.TryParse(_frequencyPipelineEndText, out float endFrequency))
+        {
+            _frequencyPipelineStatusText = "Frequency pipeline end must be a number.";
+            return;
+        }
+
+        if (!float.TryParse(_frequencyPipelineStepText, out float stepFrequency))
+        {
+            _frequencyPipelineStatusText = "Frequency pipeline step must be a number.";
+            return;
+        }
+
+        startFrequency = Mathf.Max(1f, startFrequency);
+        endFrequency = Mathf.Max(startFrequency, endFrequency);
+        stepFrequency = Mathf.Max(0.001f, stepFrequency);
+        _frequencyPipelineStartText = startFrequency.ToString("0.###");
+        _frequencyPipelineEndText = endFrequency.ToString("0.###");
+        _frequencyPipelineStepText = stepFrequency.ToString("0.###");
+
+        CancelSpawnerSweepPipeline(null);
+        CancelScheduledSolverRunTimeLogging(null);
+        _isPipelineActive = true;
+        _pipelineKind = PipelineKind.FrequencyLogging;
+        _frequencyPipelineCurrentValue = startFrequency;
+        _frequencyPipelineEndValue = endFrequency;
+        _frequencyPipelineStepValue = stepFrequency;
+        _pipelineRemainingLogs = 0;
+        _pipelineAccumulatedSolverSubsteps = 0;
+
+        ApplyFrequencyPipelineValue(_frequencyPipelineCurrentValue);
+        _pipelineStage = PipelineStage.WaitingBeforeLogging;
+        _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+        _frequencyPipelineStatusText =
+            $"Frequency logging pipeline running: frequency {_frequencyPipelineCurrentValue:0.###} Hz. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+        _pipelineStatusText = "Pipeline idle.";
+        _iterationPipelineStatusText = "Pipeline idle.";
+        _cellSizePipelineStatusText = "Pipeline idle.";
+    }
+
+    private void StartIterationLoggingPipeline()
+    {
+        if (!int.TryParse(_iterationPipelineStartText, out int startIterationCount))
+        {
+            _iterationPipelineStatusText = "Iteration pipeline start must be a whole number.";
+            return;
+        }
+
+        if (!int.TryParse(_iterationPipelineEndText, out int endIterationCount))
+        {
+            _iterationPipelineStatusText = "Iteration pipeline end must be a whole number.";
+            return;
+        }
+
+        if (!int.TryParse(_iterationPipelineStepText, out int stepIterationCount))
+        {
+            _iterationPipelineStatusText = "Iteration pipeline step must be a whole number.";
+            return;
+        }
+
+        startIterationCount = Mathf.Max(1, startIterationCount);
+        endIterationCount = Mathf.Max(startIterationCount, endIterationCount);
+        stepIterationCount = Mathf.Max(1, stepIterationCount);
+        _iterationPipelineStartText = startIterationCount.ToString();
+        _iterationPipelineEndText = endIterationCount.ToString();
+        _iterationPipelineStepText = stepIterationCount.ToString();
+
+        CancelSpawnerSweepPipeline(null);
+        CancelScheduledSolverRunTimeLogging(null);
+        _isPipelineActive = true;
+        _pipelineKind = PipelineKind.IterationLogging;
+        _iterationPipelineCurrentValue = startIterationCount;
+        _iterationPipelineEndValue = endIterationCount;
+        _iterationPipelineStepValue = stepIterationCount;
+        _pipelineRemainingLogs = 0;
+        _pipelineAccumulatedSolverSubsteps = 0;
+
+        ApplyIterationPipelineValue(_iterationPipelineCurrentValue);
+        _pipelineStage = PipelineStage.WaitingBeforeLogging;
+        _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+        _iterationPipelineStatusText =
+            $"Iteration logging pipeline running: iterations {_iterationPipelineCurrentValue}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+        _pipelineStatusText = "Pipeline idle.";
+        _frequencyPipelineStatusText = "Pipeline idle.";
+        _cellSizePipelineStatusText = "Pipeline idle.";
+    }
+
+    private void StartCellSizeLoggingPipeline()
+    {
+        if (!float.TryParse(_cellSizePipelineStartText, out float startCellSize))
+        {
+            _cellSizePipelineStatusText = "Cell size pipeline start must be a number.";
+            return;
+        }
+
+        if (!float.TryParse(_cellSizePipelineEndText, out float endCellSize))
+        {
+            _cellSizePipelineStatusText = "Cell size pipeline end must be a number.";
+            return;
+        }
+
+        if (!float.TryParse(_cellSizePipelineStepText, out float stepCellSize))
+        {
+            _cellSizePipelineStatusText = "Cell size pipeline step must be a number.";
+            return;
+        }
+
+        startCellSize = Mathf.Max(GridAuthoring.MinCellSize, startCellSize);
+        endCellSize = Mathf.Max(startCellSize, endCellSize);
+        stepCellSize = Mathf.Max(0.001f, stepCellSize);
+        _cellSizePipelineStartText = startCellSize.ToString("0.###");
+        _cellSizePipelineEndText = endCellSize.ToString("0.###");
+        _cellSizePipelineStepText = stepCellSize.ToString("0.###");
+
+        CancelSpawnerSweepPipeline(null);
+        CancelScheduledSolverRunTimeLogging(null);
+        _isPipelineActive = true;
+        _pipelineKind = PipelineKind.CellSizeLogging;
+        _cellSizePipelineCurrentValue = startCellSize;
+        _cellSizePipelineEndValue = endCellSize;
+        _cellSizePipelineStepValue = stepCellSize;
+        _pipelineRemainingLogs = 0;
+        _pipelineAccumulatedSolverSubsteps = 0;
+
+        ApplyCellSizePipelineValue(_cellSizePipelineCurrentValue);
+        _pipelineStage = PipelineStage.WaitingBeforeLogging;
+        _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+        _cellSizePipelineStatusText =
+            $"Cell size logging pipeline running: cell size {_cellSizePipelineCurrentValue:0.###}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+        _pipelineStatusText = "Pipeline idle.";
+        _frequencyPipelineStatusText = "Pipeline idle.";
+        _iterationPipelineStatusText = "Pipeline idle.";
+    }
+
+    private void UpdateSpawnerSweepPipeline()
+    {
+        if (!_isPipelineActive)
+        {
+            return;
+        }
+
+        switch (_pipelineStage)
+        {
+            case PipelineStage.WaitingBeforeLogging:
+                _pipelineAccumulatedSolverSubsteps += _currentSolverSubsteps;
+                if (Time.unscaledTime < _pipelineNextActionTime)
+                {
+                    return;
+                }
+
+                if (_pipelineAccumulatedSolverSubsteps < PipelineSolverStepsBeforeFirstLog)
+                {
+                    return;
+                }
+
+                _pipelineAccumulatedSolverSubsteps = 0;
+
+                if (!TryStartPipelineLogging())
+                {
+                    CancelSpawnerSweepPipeline(GetLoggingStartFailureStatus());
+                    return;
+                }
+
+                if (_pipelineRemainingLogs > 0)
+                {
+                    _pipelineStage = PipelineStage.WaitingForLoggingCompletion;
+                    SetActivePipelineStatus(GetLoggingInProgressStatus());
+                    return;
+                }
+
+                AdvanceSpawnerSweepPipeline();
+                return;
+
+            case PipelineStage.WaitingForLoggingCompletion:
+                _pipelineAccumulatedSolverSubsteps += _currentSolverSubsteps;
+                if (_pipelineAccumulatedSolverSubsteps < PipelineSolverStepsBetweenLogs)
+                {
+                    return;
+                }
+
+                _pipelineAccumulatedSolverSubsteps = 0;
+                _pipelineRemainingLogs--;
+                if (!TryLogSolverRunTimeStats())
+                {
+                    CancelSpawnerSweepPipeline(GetLoggingStartFailureStatus());
+                    return;
+                }
+
+                if (_pipelineRemainingLogs > 0)
+                {
+                    SetActivePipelineStatus(GetLoggingInProgressStatus());
+                    return;
+                }
+
+                AdvanceSpawnerSweepPipeline();
+                return;
+        }
+    }
+
+    private void AdvanceSpawnerSweepPipeline()
+    {
+        switch (_pipelineKind)
+        {
+            case PipelineKind.ParticleLogging:
+                if (_pipelineCurrentSpawnAmount >= _pipelineEndSpawnAmount)
+                {
+                    CancelSpawnerSweepPipeline(
+                        $"Particle logging pipeline complete at spawn amount {_pipelineCurrentSpawnAmount}.");
+                    return;
+                }
+
+                _pipelineCurrentSpawnAmount++;
+                ApplySpawnerSweepSpawnAmount(_pipelineCurrentSpawnAmount);
+                _pipelineStage = PipelineStage.WaitingBeforeLogging;
+                _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+                _pipelineStatusText =
+                    $"Particle logging pipeline running: spawn amount {_pipelineCurrentSpawnAmount}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+                return;
+
+            case PipelineKind.FrequencyLogging:
+                float nextFrequency = _frequencyPipelineCurrentValue + _frequencyPipelineStepValue;
+                if (nextFrequency > _frequencyPipelineEndValue + 0.0001f)
+                {
+                    CancelSpawnerSweepPipeline(
+                        $"Frequency logging pipeline complete at {_frequencyPipelineCurrentValue:0.###} Hz.");
+                    return;
+                }
+
+                _frequencyPipelineCurrentValue = nextFrequency;
+                ApplyFrequencyPipelineValue(_frequencyPipelineCurrentValue);
+                _pipelineStage = PipelineStage.WaitingBeforeLogging;
+                _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+                _frequencyPipelineStatusText =
+                    $"Frequency logging pipeline running: frequency {_frequencyPipelineCurrentValue:0.###} Hz. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+                return;
+
+            case PipelineKind.IterationLogging:
+                int nextIterationCount = _iterationPipelineCurrentValue + _iterationPipelineStepValue;
+                if (nextIterationCount > _iterationPipelineEndValue)
+                {
+                    CancelSpawnerSweepPipeline(
+                        $"Iteration logging pipeline complete at {_iterationPipelineCurrentValue} iterations.");
+                    return;
+                }
+
+                _iterationPipelineCurrentValue = nextIterationCount;
+                ApplyIterationPipelineValue(_iterationPipelineCurrentValue);
+                _pipelineStage = PipelineStage.WaitingBeforeLogging;
+                _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+                _iterationPipelineStatusText =
+                    $"Iteration logging pipeline running: iterations {_iterationPipelineCurrentValue}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+                return;
+
+            case PipelineKind.CellSizeLogging:
+                float nextCellSize = _cellSizePipelineCurrentValue + _cellSizePipelineStepValue;
+                if (nextCellSize > _cellSizePipelineEndValue + 0.0001f)
+                {
+                    CancelSpawnerSweepPipeline(
+                        $"Cell size logging pipeline complete at {_cellSizePipelineCurrentValue:0.###}.");
+                    return;
+                }
+
+                _cellSizePipelineCurrentValue = nextCellSize;
+                ApplyCellSizePipelineValue(_cellSizePipelineCurrentValue);
+                _pipelineStage = PipelineStage.WaitingBeforeLogging;
+                _pipelineNextActionTime = Time.unscaledTime + PipelineWaitBeforeLoggingSeconds;
+                _cellSizePipelineStatusText =
+                    $"Cell size logging pipeline running: cell size {_cellSizePipelineCurrentValue:0.###}. Logging starts after {PipelineWaitBeforeLoggingSeconds:0} s and {PipelineSolverStepsBeforeFirstLog} solver steps.";
+                return;
+        }
+    }
+
+    private void ApplySpawnerSweepSpawnAmount(int spawnAmount)
+    {
+        RefreshDebugEntries();
+        foreach (SpawnerDebugEntry entry in _spawnerEntries)
+        {
+            UpdateSpawnAmountTexts(entry, new int3(spawnAmount, spawnAmount, spawnAmount));
+        }
+
+        ResetScene(cancelAutomation: false);
+    }
+
+    private void ApplyFrequencyPipelineValue(float frequency)
+    {
+        _updateFrequencyText = frequency.ToString("0.###");
+        SetUpdateFrequency(frequency);
+        ResetScene(cancelAutomation: false);
+        if (TryGetConfig(out Config updatedConfig))
+        {
+            _updateFrequencyText = updatedConfig.UpdateFrequency.ToString("0.###");
+        }
+    }
+
+    private void ApplyIterationPipelineValue(int iterationCount)
+    {
+        _iterationCountText = iterationCount.ToString();
+        SetIterationCount(iterationCount);
+        ResetScene(cancelAutomation: false);
+        if (TryGetConfig(out Config updatedConfig))
+        {
+            _iterationCountText = updatedConfig.IterationCount.ToString();
+        }
+    }
+
+    private void ApplyCellSizePipelineValue(float cellSize)
+    {
+        RefreshDebugEntries();
+        foreach (GridDebugEntry entry in _gridEntries)
+        {
+            entry.CellSizeText = cellSize.ToString("0.###");
+        }
+
+        ResetScene(cancelAutomation: false);
+    }
+
+    private bool TryStartPipelineLogging()
+    {
+        if (!int.TryParse(_logRepeatCountText, out int requestedLogCount))
+        {
+            _solverRunTimeStatusText = "Log count must be a whole number.";
+            return false;
+        }
+
+        requestedLogCount = Mathf.Max(1, requestedLogCount);
+        _logRepeatCountText = requestedLogCount.ToString();
+        _pipelineAccumulatedSolverSubsteps = 0;
+        _pipelineRemainingLogs = requestedLogCount - 1;
+
+        if (!TryLogSolverRunTimeStats())
+        {
+            _pipelineRemainingLogs = 0;
+            return false;
+        }
+
+        return true;
+    }
+
+    private void CancelSpawnerSweepPipeline(string statusText)
+    {
+        PipelineKind previousPipelineKind = _pipelineKind;
+        _isPipelineActive = false;
+        _pipelineStage = PipelineStage.Inactive;
+        _pipelineKind = PipelineKind.None;
+        _pipelineCurrentSpawnAmount = 0;
+        _pipelineEndSpawnAmount = 0;
+        _pipelineNextActionTime = 0f;
+        _frequencyPipelineCurrentValue = 0f;
+        _frequencyPipelineEndValue = 0f;
+        _frequencyPipelineStepValue = 0f;
+        _iterationPipelineCurrentValue = 0;
+        _iterationPipelineEndValue = 0;
+        _iterationPipelineStepValue = 0;
+        _cellSizePipelineCurrentValue = 0f;
+        _cellSizePipelineEndValue = 0f;
+        _cellSizePipelineStepValue = 0f;
+        _pipelineRemainingLogs = 0;
+        _pipelineAccumulatedSolverSubsteps = 0;
+        if (!string.IsNullOrWhiteSpace(statusText))
+        {
+            if (previousPipelineKind == PipelineKind.FrequencyLogging)
+            {
+                _frequencyPipelineStatusText = statusText;
+            }
+            else if (previousPipelineKind == PipelineKind.IterationLogging)
+            {
+                _iterationPipelineStatusText = statusText;
+            }
+            else if (previousPipelineKind == PipelineKind.CellSizeLogging)
+            {
+                _cellSizePipelineStatusText = statusText;
+            }
+            else
+            {
+                _pipelineStatusText = statusText;
+            }
+        }
+    }
+
+    private string GetLoggingStartFailureStatus()
+    {
+        switch (_pipelineKind)
+        {
+            case PipelineKind.FrequencyLogging:
+                return "Frequency logging pipeline stopped because logging could not start.";
+            case PipelineKind.IterationLogging:
+                return "Iteration logging pipeline stopped because logging could not start.";
+            case PipelineKind.CellSizeLogging:
+                return "Cell size logging pipeline stopped because logging could not start.";
+            default:
+                return "Particle logging pipeline stopped because logging could not start.";
+        }
+    }
+
+    private string GetLoggingInProgressStatus()
+    {
+        switch (_pipelineKind)
+        {
+            case PipelineKind.FrequencyLogging:
+                return $"Frequency logging pipeline running: logging for {_frequencyPipelineCurrentValue:0.###} Hz. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+            case PipelineKind.IterationLogging:
+                return $"Iteration logging pipeline running: logging for {_iterationPipelineCurrentValue} iterations. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+            case PipelineKind.CellSizeLogging:
+                return $"Cell size logging pipeline running: logging for {_cellSizePipelineCurrentValue:0.###}. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+            default:
+                return $"Particle logging pipeline running: logging for spawn amount {_pipelineCurrentSpawnAmount}. Next log after {PipelineSolverStepsBetweenLogs} solver steps.";
+        }
+    }
+
+    private void SetActivePipelineStatus(string statusText)
+    {
+        if (_pipelineKind == PipelineKind.FrequencyLogging)
+        {
+            _frequencyPipelineStatusText = statusText;
+            return;
+        }
+
+        if (_pipelineKind == PipelineKind.IterationLogging)
+        {
+            _iterationPipelineStatusText = statusText;
+            return;
+        }
+
+        if (_pipelineKind == PipelineKind.CellSizeLogging)
+        {
+            _cellSizePipelineStatusText = statusText;
+            return;
+        }
+
+        _pipelineStatusText = statusText;
+    }
+
+    private void ResetSolverRunTimeDisplay(string statusText = null)
+    {
+        _solverRunTimeMinText = "Press Update";
+        _solverRunTimeMaxText = "Press Update";
+        _solverRunTimeMeanText = "Press Update";
+        _solverRunTimeSampleCountText =
+            $"Samples: 0 / {PBMPMProfilerCaptureStats.SolverRunSampleWindow}";
+        _solverRunTimeStatusText = string.IsNullOrWhiteSpace(statusText)
+            ? $"CSV: {PBMPMProfilerCaptureStats.RuntimeCsvRelativePath}"
+            : statusText;
+    }
+
+    private static string FormatDurationMs(double valueMs)
+    {
+        return $"{valueMs:F3} ms";
+    }
+
     private static GridAuthoring TryResolveGridAuthoring(EntityManager entityManager, Entity entity, Dictionary<int, GridAuthoring> authoringById)
     {
         if (!entityManager.HasComponent<GridAuthoringReference>(entity))
@@ -977,6 +1791,33 @@ public class SimulationDebugOverlay : MonoBehaviour
             shape.SpawnAmount.x > 1 ? shape.LocalStep.x * (shape.SpawnAmount.x - 1) * 0.5f : 0f,
             shape.SpawnAmount.y > 1 ? shape.LocalStep.y * (shape.SpawnAmount.y - 1) * 0.5f : 0f,
             shape.SpawnAmount.z > 1 ? shape.LocalStep.z * (shape.SpawnAmount.z - 1) * 0.5f : 0f);
+    }
+
+    private static bool TryGetSharedSpawnAmount(string sharedText, out int spawnAmount)
+    {
+        spawnAmount = 0;
+        if (string.IsNullOrWhiteSpace(sharedText) || !int.TryParse(sharedText, out int parsedAmount))
+        {
+            return false;
+        }
+
+        spawnAmount = Mathf.Max(SpawnShapeAuthoring.MinSpawnAmount, parsedAmount);
+        return true;
+    }
+
+    private static string GetSharedSpawnAmountText(int3 spawnAmount)
+    {
+        return spawnAmount.x == spawnAmount.y && spawnAmount.y == spawnAmount.z
+            ? spawnAmount.x.ToString()
+            : string.Empty;
+    }
+
+    private static void UpdateSpawnAmountTexts(SpawnerDebugEntry entry, int3 spawnAmount)
+    {
+        entry.SpawnAmountXText = spawnAmount.x.ToString();
+        entry.SpawnAmountYText = spawnAmount.y.ToString();
+        entry.SpawnAmountZText = spawnAmount.z.ToString();
+        entry.SpawnAmountAllText = GetSharedSpawnAmountText(spawnAmount);
     }
 
     private static void RebuildGridCells(DynamicBuffer<GridCell> gridCells, GridComponent grid)
@@ -1070,6 +1911,7 @@ public class SimulationDebugOverlay : MonoBehaviour
         public string SpawnAmountXText;
         public string SpawnAmountYText;
         public string SpawnAmountZText;
+        public string SpawnAmountAllText;
         public string ExtentXText;
         public string ExtentYText;
         public string ExtentZText;
@@ -1078,5 +1920,21 @@ public class SimulationDebugOverlay : MonoBehaviour
         public string AlbedoRText;
         public string AlbedoGText;
         public string AlbedoBText;
+    }
+
+    private enum PipelineStage
+    {
+        Inactive,
+        WaitingBeforeLogging,
+        WaitingForLoggingCompletion
+    }
+
+    private enum PipelineKind
+    {
+        None,
+        ParticleLogging,
+        FrequencyLogging,
+        IterationLogging,
+        CellSizeLogging
     }
 }
