@@ -11,10 +11,6 @@ using UnityEngine;
 
 public static class MemoryCaptureStatsExporter
 {
-    private static readonly Regex CaptureNamePattern = new Regex(
-        @"^(?<particles>\d+)P_(?<cells>\d+)C$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     [MenuItem("Tools/Memory/Export Capture Quick Stats")]
     public static void ExportQuickStats()
     {
@@ -72,20 +68,11 @@ public static class MemoryCaptureStatsExporter
 
         var csv = new StringBuilder();
         csv.AppendLine(
-            "capture_name,particle_count,cell_count,total_allocated_bytes,total_allocated_mib,total_resident_bytes,total_resident_mib,max_available_bytes,max_available_gib,product_name,unity_version,platform,is_editor_capture,scripting_implementation,capture_flags,timestamp_utc,pbmpm_stats_available,pbmpm_grid_count,pbmpm_grid_node_count,pbmpm_tile_particle_cache_capacity,pbmpm_particle_component_bytes,pbmpm_particle_transform_bytes,pbmpm_grid_component_bytes,pbmpm_grid_node_bytes,pbmpm_tile_particle_cache_bytes,pbmpm_total_estimated_solver_bytes,pbmpm_total_estimated_runtime_bytes,metadata_description");
+            "capture_name,particle_count,cell_count,total_allocated_bytes,total_allocated_mib,total_resident_bytes,total_resident_mib,max_available_bytes,max_available_gib,product_name,unity_version,platform,is_editor_capture,scripting_implementation,capture_flags,timestamp_utc,pbmpm_stats_available,pbmpm_grid_count,pbmpm_grid_node_count,pbmpm_tile_particle_cache_capacity,pbmpm_particle_component_bytes,pbmpm_particle_transform_bytes,pbmpm_grid_component_bytes,pbmpm_grid_node_bytes,pbmpm_tile_particle_cache_bytes,pbmpm_total_estimated_solver_bytes,pbmpm_total_estimated_runtime_bytes");
 
         foreach (string snapshotPath in snapshotFiles)
         {
             string captureName = Path.GetFileNameWithoutExtension(snapshotPath);
-            int particleCount = 0;
-            int cellCount = 0;
-
-            Match match = CaptureNamePattern.Match(captureName);
-            if (match.Success)
-            {
-                int.TryParse(match.Groups["particles"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out particleCount);
-                int.TryParse(match.Groups["cells"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out cellCount);
-            }
 
             object builder = Activator.CreateInstance(builderType, snapshotPath);
             object fileModel = buildMethod.Invoke(builder, null);
@@ -108,6 +95,8 @@ public static class MemoryCaptureStatsExporter
             string metadataDescription = GetPropertyValue<string>(fileModel, "MetadataDescription") ?? string.Empty;
             DateTime timestampUtc = GetPropertyValue<DateTime>(fileModel, "Timestamp").ToUniversalTime();
             bool pbmpmStatsAvailable = TryGetMetadataBool(metadataDescription, "StatsAvailable");
+            long pbmpmParticleCount = GetMetadataLong(metadataDescription, "ParticleCount");
+            long pbmpmGridCellCount = GetMetadataLong(metadataDescription, "GridCellCount");
             long pbmpmGridCount = GetMetadataLong(metadataDescription, "GridCount");
             long pbmpmGridNodeCount = GetMetadataLong(metadataDescription, "GridNodeCount");
             long pbmpmTileParticleCacheCapacity = GetMetadataLongWithFallback(
@@ -126,8 +115,8 @@ public static class MemoryCaptureStatsExporter
             long pbmpmTotalEstimatedRuntimeBytes = GetMetadataLong(metadataDescription, "TotalEstimatedRuntimeBytes");
 
             csv.Append(Escape(captureName)).Append(',');
-            csv.Append(particleCount.ToString(CultureInfo.InvariantCulture)).Append(',');
-            csv.Append(cellCount.ToString(CultureInfo.InvariantCulture)).Append(',');
+            csv.Append(pbmpmParticleCount.ToString(CultureInfo.InvariantCulture)).Append(',');
+            csv.Append(pbmpmGridCellCount.ToString(CultureInfo.InvariantCulture)).Append(',');
             csv.Append(totalAllocated.ToString(CultureInfo.InvariantCulture)).Append(',');
             csv.Append(ToMiB(totalAllocated).ToString("F3", CultureInfo.InvariantCulture)).Append(',');
             csv.Append(totalResident.ToString(CultureInfo.InvariantCulture)).Append(',');
@@ -151,8 +140,7 @@ public static class MemoryCaptureStatsExporter
             csv.Append(pbmpmGridNodeBytes.ToString(CultureInfo.InvariantCulture)).Append(',');
             csv.Append(pbmpmTileParticleCacheBytes.ToString(CultureInfo.InvariantCulture)).Append(',');
             csv.Append(pbmpmTotalEstimatedSolverBytes.ToString(CultureInfo.InvariantCulture)).Append(',');
-            csv.Append(pbmpmTotalEstimatedRuntimeBytes.ToString(CultureInfo.InvariantCulture)).Append(',');
-            csv.Append(Escape(metadataDescription)).AppendLine();
+            csv.Append(pbmpmTotalEstimatedRuntimeBytes.ToString(CultureInfo.InvariantCulture)).AppendLine();
         }
 
         File.WriteAllText(outputPath, csv.ToString(), Encoding.UTF8);
